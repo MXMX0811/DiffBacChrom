@@ -120,7 +120,7 @@ Check the version:
 cmake -version
 ```
 
-### CUDA
+### CUDA (optional)
 
 Here we use CUDA for GPU acceleration, therefore we should install CUDA ToolKit before build GROMACS. You should check the capabilty of your GPU driver version [here](https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html). We use CUDA 12.6 in this project. You can describe your target platform and download the software [here](https://developer.nvidia.com/cuda-12-6-0-download-archive?target_os=Linux&target_arch=x86_64&Distribution=WSL-Ubuntu&target_version=2.0&target_type=deb_network).
 
@@ -149,7 +149,7 @@ nvidia-smi
 nvcc -V
 ```
 
-### OpenMPI
+### OpenMPI (optional)
 
 You can select the OpenMPI version [here](https://www.open-mpi.org/software/ompi/v5.0/). Here we use OpenMPI 5.0.5.
 
@@ -171,4 +171,57 @@ export PATH=${MPI_HOME}/bin:$PATH
 export LD_LIBRARY_PATH=${MPI_HOME}/lib:$LD_LIBRARY_PATH
 export MANPATH=${MPI_HOME}/share/man:$MANPATH
 source ~/.bashrc
+```
+
+### Conda
+
+We mainly use Python for this project. Here we use MiniConda as the Python environment. Miniconda is a free, miniature installation of Anaconda Distribution.
+
+```powershell
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash ~/Miniconda3-latest-Linux-x86_64.sh
+```
+
+You should press `Enter` to review Miniconda’s End User License Agreement (EULA). 
+
+Then you should type `yes` to agree the EULA.
+
+Press `Enter` to accept the default install location (`PREFIX=/Users/<USER>/miniconda3`) or give your own path.
+
+Then choose the initialization option, recommand `yes` (initialize conda whenever you open a new shell and to recognize conda commands automatically). You can use `conda config --set auto_activate_base false` to disable it later.
+
+Create a conda environment for the project:
+
+```powershell
+conda create --name bac_chrom python=3.13.9
+```
+
+Activate the environment:
+
+```powershell
+conda activate bac_chrom
+```
+
+Deactivate the environment:
+
+```powershell
+conda deactivate
+```
+
+The GROMACS build requires the Python packages `MDAnalysis` and `groio`. We first need to install `pip` to allow the installation of other packages. First activate the environment:
+
+```powershell
+conda activate bac_chrom
+```
+
+Install `pip`:
+
+```powershell
+conda install pip
+```
+
+Install `MDAnalysis` and `groio`:
+
+```powershell
+pip install MDAnalysis groio
 ```
