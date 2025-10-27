@@ -71,9 +71,24 @@ OpenSSL package is needed:
 sudo apt-get install libssl-dev
 ```
 
-Then download the source code of CMake:
+Then download and depackage the source code of CMake:
 
 ```powershell
 wget https://github.com/Kitware/CMake/releases/download/v4.0.2/cmake-4.0.2.tar.gz
 tar -zxvf cmake-4.0.2.tar.gz
+```
+
+Enter the extracted folder:
+
+```powershell
+cd cmake-4.0.2
+./bootstrap
+make
+sudo make install
+```
+
+Add environment variables in the file `~/.bashrc` (PATH=your installation path):
+
+```powershell
+export PATH="/usr/local/cmake/bin:$PATH"
 ```
