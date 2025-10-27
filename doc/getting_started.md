@@ -52,11 +52,18 @@ After the installation, a console window will open and you should create your us
 
 ### GCC / G++
 
-Later GCC version (GCC version 9 or later) is needed for the build of GROMACS. For Ubuntu 24.04.1 LTS, you can use `apt-get` command in your terminal directly (default version GCC 13.2 for Ubuntu 24.04.1 LTS).
+Later GCC version (GCC version 9 or later) is needed for the build of GROMACS. For Ubuntu 24.04.1 LTS, you can use `apt-get` command in your terminal directly (default version GCC 13 for Ubuntu 24.04.1 LTS).
 
 ```powershell
 sudo apt-get update
 sudo apt-get install gcc g++
+```
+
+Check the version:
+
+```powershell
+gcc -v
+g++ -v
 ```
 
 For earlier systems you may need to update the version manually.
@@ -100,3 +107,57 @@ vim ~/.bashrc
 ```
 
 Now you can see the file contents in the terminal window. Scroll to the end of the file and press `i` to enter insert mode, then type: `export PATH="/usr/local/cmake/bin:$PATH"`. Press `Esc` to exit insert mode. Then type `:wq` to save and quit the file.
+
+Once you have modified `~/.bashrc`, you should update it by:
+
+```powershell
+source ~/.bashrc
+```
+
+Check the version:
+
+```powershell
+cmake -version
+```
+
+### CUDA
+
+Here we use CUDA for GPU acceleration, therefore we should install CUDA ToolKit before build GROMACS. You should check the capabilty of your GPU driver version [here](https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html). We use CUDA 12.6 in this project. You can describe your target platform and download the software [here](https://developer.nvidia.com/cuda-12-6-0-download-archive?target_os=Linux&target_arch=x86_64&Distribution=WSL-Ubuntu&target_version=2.0&target_type=deb_network).
+
+Use network installer:
+
+```powershell
+wget https://developer.download.nvidia.com/compute/cuda/repos/wsl-ubuntu/x86_64/cuda-keyring_1.1-1_all.deb
+sudo dpkg -i cuda-keyring_1.1-1_all.deb
+sudo apt-get update
+sudo apt-get -y install cuda-toolkit-12-6
+```
+
+Add environment variables:
+
+```powershell
+vim ~/.bashrc
+export PATH="/usr/local/cuda-12.6/bin:$PATH"
+export LD_LIBRARY_PATH="/usr/local/cuda-12.6/targets/x86_64-linux/lib/:$LD_LIBRARY_PATH"
+source ~/.bashrc
+```
+
+Check the version:
+
+```powershell
+nvidia-smi
+nvcc -V
+```
+
+### OpenMPI
+
+You can select the OpenMPI version [here](https://www.open-mpi.org/software/ompi/v5.0/). Here we use OpenMPI 5.0.5.
+
+```powershell
+wget https://download.open-mpi.org/release/open-mpi/v5.0/openmpi-5.0.5.tar.gz
+tar zxf openmpi-5.0.5.tar.gz
+cd openmpi-5.0.5
+./configure --prefix=/usr/local/openmpi
+make
+make install
+```
