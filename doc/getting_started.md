@@ -1,6 +1,6 @@
 # Getting started
 
-This project requires [GROMACS 2025.3](https://manual.gromacs.org/current/index.html) and runs in the Windows Subsystem for Linux (WSL).
+This is a basic Getting Started guide aimed at helping users with no prior development experience set up the environment from very begining. This project requires [GROMACS 2025.3](https://manual.gromacs.org/current/index.html) and runs in the Windows Subsystem for Linux (WSL).
 
 ## Install Ubuntu 24.04.1 LTS on WSL
 
