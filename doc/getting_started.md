@@ -92,3 +92,11 @@ Add environment variables in the file `~/.bashrc` (PATH=your installation path):
 ```powershell
 export PATH="/usr/local/cmake/bin:$PATH"
 ```
+
+You can use a Windows text editor to access and modify files in the WSL file system directly from Windows. If you prefer to use Vim instead, type the following command in the terminal:
+
+```powershell
+vim ~/.bashrc
+```
+
+Now you can see the file contents in the terminal window. Scroll to the end of the file and press `i` to enter insert mode, then type: `export PATH="/usr/local/cmake/bin:$PATH"`. Press `Esc` to exit insert mode. Then type `:wq` to save and quit the file.
