@@ -225,3 +225,51 @@ Install `MDAnalysis` and `groio`:
 ```powershell
 pip install MDAnalysis groio
 ```
+
+## GROMACS
+
+Download the [Source Code](https://manual.gromacs.org/current/download.html) of GROMACS:
+
+```powershell
+wget https://ftp.gromacs.org/gromacs/gromacs-2025.3.tar.gz
+tar xfz gromacs-2025.3.tar.gz
+cd gromacs-2025.3
+mkdir build
+cd build
+```
+
+Normal build:
+
+```powershell
+cmake .. -DGMX_BUILD_OWN_FFTW=ON -DREGRESSIONTEST_DOWNLOAD=ON
+```
+
+Build with NVIDIA CUDA support enabled:
+
+```powershell
+cmake .. -DGMX_BUILD_OWN_FFTW=ON -DREGRESSIONTEST_DOWNLOAD=ON -DGMX_GPU=CUDA
+```
+
+You can check the build options from the [Installation Guide](https://manual.gromacs.org/current/install-guide/index.html).
+
+Installation:
+
+```powershell
+make
+make check
+sudo make install
+```
+
+Add environment variables:
+
+```powershell
+vim ~/.bashrc
+source /usr/local/gromacs/bin/GMXRC
+source ~/.bashrc
+```
+
+Check the version:
+
+```powershell
+gmx -version
+```
