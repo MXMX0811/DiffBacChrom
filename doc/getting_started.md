@@ -50,4 +50,30 @@ After the installation, a console window will open and you should create your us
 
 ## Environment dependencies
 
-Later GCC version (GCC version 9 or later) is needed for the build of GROMACS. For Ubuntu 24.04.1 LTS, you can use `sudo apt-get install build-essential` command in your terminal directly (GCC 13 is the default version for Ubuntu 24.04.1 LTS). For earlier systems you may need to update the version manually.
+### GCC / G++
+
+Later GCC version (GCC version 9 or later) is needed for the build of GROMACS. For Ubuntu 24.04.1 LTS, you can use `apt-get` command in your terminal directly (default version GCC 13.2 for Ubuntu 24.04.1 LTS).
+
+```powershell
+sudo apt-get update
+sudo apt-get install gcc g++
+```
+
+For earlier systems you may need to update the version manually.
+
+### CMake
+
+GROMACS builds with the CMake build system, requiring at least version 3.28. Here we use CMake 4.0.2.
+
+OpenSSL package is needed:
+
+```powershell
+sudo apt-get install libssl-dev
+```
+
+Then download the source code of CMake:
+
+```powershell
+wget https://github.com/Kitware/CMake/releases/download/v4.0.2/cmake-4.0.2.tar.gz
+tar -zxvf cmake-4.0.2.tar.gz
+```
