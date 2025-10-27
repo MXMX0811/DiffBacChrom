@@ -2,6 +2,15 @@
 
 This is a basic Getting Started guide aimed at helping users with no prior development experience set up the environment from very begining. This project requires [GROMACS 2025.3](https://manual.gromacs.org/current/index.html) and runs in the Windows Subsystem for Linux (WSL).
 
+Requirements:
+
+* Ubuntu 24.04.1 LTS
+* GCC / G++ 13.3.0
+* CMake 4.0.2
+* CUDA 12.6 (optional)
+* OpenMPI 5.0.5 (optional)
+* Python 3.13.9
+
 ## Install Ubuntu 24.04.1 LTS on WSL
 
 [WSL Documentation](https://learn.microsoft.com/en-us/windows/wsl/install-manual)
