@@ -251,12 +251,12 @@ pip install MDAnalysis groio
 
 ## GROMACS
 
-Download the [Source Code](https://manual.gromacs.org/current/download.html) of GROMACS:
+Download the [Source Code](https://manual.gromacs.org/2019-current/download.html) of GROMACS:
 
 ```powershell
-wget https://ftp.gromacs.org/gromacs/gromacs-2025.3.tar.gz
-tar xfz gromacs-2025.3.tar.gz
-cd gromacs-2025.3
+wget ftp://ftp.gromacs.org/pub/gromacs/gromacs-2019.6.tar.gz
+tar xfz gromacs-2019.6.tar.gz
+cd gromacs-2019.6
 mkdir build
 cd build
 ```
@@ -273,7 +273,7 @@ Build with NVIDIA CUDA support enabled:
 cmake .. -DGMX_BUILD_OWN_FFTW=ON -DREGRESSIONTEST_DOWNLOAD=ON -DGMX_GPU=CUDA
 ```
 
-You can check the build options from the [Installation Guide](https://manual.gromacs.org/current/install-guide/index.html).
+You can check the build options from the [Installation Guide](https://manual.gromacs.org/2019-current/install-guide/index.html).
 
 Installation:
 
