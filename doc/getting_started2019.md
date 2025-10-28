@@ -277,6 +277,44 @@ Build with NVIDIA CUDA support enabled:
 cmake .. -DGMX_BUILD_OWN_FFTW=ON -DREGRESSIONTEST_DOWNLOAD=ON -DGMX_GPU=CUDA
 ```
 
+If you meet problems like:
+
+```powershell
+Downloading: https://ftp.gromacs.org/regressiontests/regressiontests-2020.6.tar.gz
+CMake Error at tests/CMakeLists.txt:58 (message):
+  error: downloading
+  'https://ftp.gromacs.org/regressiontests/regressiontests-2019.6.tar.gz'
+  failed
+
+  status_code: 1
+
+  status_string: "Unsupported protocol"
+
+  log: Protocol "https" not supported or disabled in libcurl
+
+  Closing connection -1
+```
+
+You can download the Relevant Test from [here](https://ftp.gromacs.org/regressiontests/) and untar the regression test to the `gromacs-2019.6` Directory.
+
+```powershell
+wget https://ftp.gromacs.org/regressiontests/regressiontests-2019.6.tar.gz
+tar -zxvf regressiontests-2019.6.tar.gz
+```
+
+If you can get the regressiontest path correct, then you can change the option like:
+
+```powershell
+cmake .. -DGMX_BUILD_OWN_FFTW=ON -DGMX_GPU=CUDA -DREGRESSIONTEST_DOW
+NLOAD=OFF -DREGRESSIONTEST_PATH=../regressiontests-2019.6
+```
+
+Refer to:
+
+* [Gromacs Error – log: Protocol “https” not supported or disabled in libcurl](https://thelinuxcluster.com/2023/06/05/gromacs-error-log-protocol-https-not-supported-or-disabled-in-libcurl/)
+
+* [Regression Test Errors during Gromacs Compilation](https://thelinuxcluster.com/2020/12/28/regression-test-errors-during-gromacs-compilation/)
+
 You can check the build options from the [Installation Guide](https://manual.gromacs.org/2019-current/install-guide/index.html).
 
 Installation:
