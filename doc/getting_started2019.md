@@ -1,6 +1,10 @@
 # Getting started
 
-This is a basic Getting Started guide aimed at helping users with no prior development experience set up the environment from very begining. This project requires [GROMACS 2019.6](https://manual.gromacs.org/2019-current/index.html) and runs in the Windows Subsystem for Linux (WSL).
+This is a basic Getting Started guide aimed at helping users with no prior development experience set up the environment from very begining. 
+
+The code of data simulation is implemented based on [this repository](https://github.com/JMLab-tifrh/ecoli_finer) therefore [GROMACS 2019.6](https://manual.gromacs.org/2019-current/index.html) is needed.
+
+This project requires GROMACS and runs in the Windows Subsystem for Linux (WSL).
 
 Requirements:
 
