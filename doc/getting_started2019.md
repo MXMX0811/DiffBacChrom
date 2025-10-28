@@ -271,10 +271,10 @@ Normal build:
 cmake .. -DGMX_BUILD_OWN_FFTW=ON -DREGRESSIONTEST_DOWNLOAD=ON
 ```
 
-Build with NVIDIA CUDA support enabled:
+Build with NVIDIA CUDA 12.6 support enabled:
 
 ```powershell
-cmake .. -DGMX_BUILD_OWN_FFTW=ON -DREGRESSIONTEST_DOWNLOAD=ON -DGMX_GPU=CUDA
+cmake .. -DGMX_BUILD_OWN_FFTW=ON -DREGRESSIONTEST_DOWNLOAD=ON -DGMX_GPU=CUDA -DGMX_CUDA_TARGET_SM="80"
 ```
 
 If you meet problems like:
@@ -305,7 +305,7 @@ tar -zxvf regressiontests-2019.6.tar.gz
 If you can get the regressiontest path correct, then you can change the option like:
 
 ```powershell
-cmake .. -DGMX_BUILD_OWN_FFTW=ON -DGMX_GPU=CUDA -DREGRESSIONTEST_DOW
+cmake .. -DGMX_BUILD_OWN_FFTW=ON -DGMX_GPU=CUDA -DGMX_CUDA_TARGET_SM="80" -DREGRESSIONTEST_DOW
 NLOAD=OFF -DREGRESSIONTEST_PATH=../regressiontests-2019.6
 ```
 
