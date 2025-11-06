@@ -121,6 +121,7 @@ class ViTHiCEncoder(nn.Module):
     ):
         super().__init__()
         self.input_size = input_size
+        self.use_upper_tri = use_upper_tri
         self.patch_embed = PatchEmbed(input_size, patch_size, in_channels, embed_dim, bias=True)
         num_patches = self.patch_embed.num_patches
         # Will use fixed sin-cos embedding:
@@ -173,7 +174,6 @@ class ViTHiCEncoder(nn.Module):
         x = self.norm(x)
         x = self.proj_out(x)     # (B, S, out_dim) -> to DiT hidden size
         return x
-
 
 
 #################################################################################
@@ -359,18 +359,12 @@ class DiT(nn.Module):
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
         return x
 
-    def forward_with_cfg(self, x, t, cfg_scale):
-        """
-        Forward pass of DiT, but also batches the unconditional forward pass for classifier-free guidance.
-        """
-        # https://github.com/openai/glide-text2im/blob/main/notebooks/text2im.ipynb
+    def forward_with_cfg(self, x, t, cond_tokens, cfg_scale):
         half = x[: len(x) // 2]
-        combined = torch.cat([half, half], dim=0)
-        model_out = self.forward(combined, t)
-        # For exact reproducibility reasons, we apply classifier-free guidance on only
-        # three channels by default. The standard approach to cfg applies it to all channels.
-        # This can be done by uncommenting the following line and commenting-out the line following that.
-        # eps, rest = model_out[:, :self.in_channels], model_out[:, self.in_channels:]
+        cond_half = cond_tokens[: len(cond_tokens) // 2]
+        combined_x = torch.cat([half, half], dim=0)
+        combined_cond = torch.cat([cond_half, torch.zeros_like(cond_half)], dim=0)  # unconditional by zeroing cond
+        model_out = self.forward(combined_x, t, combined_cond)
         eps, rest = model_out[:, :3], model_out[:, 3:]
         cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
         half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
