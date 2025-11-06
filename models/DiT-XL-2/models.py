@@ -22,7 +22,7 @@ def modulate(x, shift, scale):
 
 
 #################################################################################
-#               Embedding Layers for Timesteps and Class Labels                 #
+#                         Embedding Layers for Timesteps                        #
 #################################################################################
 
 class TimestepEmbedder(nn.Module):
@@ -65,34 +65,115 @@ class TimestepEmbedder(nn.Module):
         return t_emb
 
 
-# class LabelEmbedder(nn.Module):
-#     """
-#     Embeds class labels into vector representations. Also handles label dropout for classifier-free guidance.
-#     """
-#     def __init__(self, num_classes, hidden_size, dropout_prob):
-#         super().__init__()
-#         use_cfg_embedding = dropout_prob > 0
-#         self.embedding_table = nn.Embedding(num_classes + use_cfg_embedding, hidden_size)
-#         self.num_classes = num_classes
-#         self.dropout_prob = dropout_prob
+#################################################################################
+#                                   HiC Encoder                                 #
+#################################################################################
 
-#     def token_drop(self, labels, force_drop_ids=None):
-#         """
-#         Drops labels to enable classifier-free guidance.
-#         """
-#         if force_drop_ids is None:
-#             drop_ids = torch.rand(labels.shape[0], device=labels.device) < self.dropout_prob
-#         else:
-#             drop_ids = force_drop_ids == 1
-#         labels = torch.where(drop_ids, self.num_classes, labels)
-#         return labels
+def _build_upper_tri_keep_indices(input_size: int, patch_size: int) -> torch.Tensor:
+    assert input_size % patch_size == 0, "input_size must be divisible by patch_size"
+    gh = gw = input_size // patch_size
+    keep = []
+    for r in range(gh):
+        for c in range(gw):
+            if r <= c:
+                keep.append(r * gw + c)
+    return torch.tensor(keep, dtype=torch.long)
 
-#     def forward(self, labels, train, force_drop_ids=None):
-#         use_dropout = self.dropout_prob > 0
-#         if (train and use_dropout) or (force_drop_ids is not None):
-#             labels = self.token_drop(labels, force_drop_ids)
-#         embeddings = self.embedding_table(labels)
-#         return embeddings
+
+class ViTBlock(nn.Module):
+    """ViT block used in HiC encoder."""
+    def __init__(self, dim, num_heads, mlp_ratio=4.0, drop=0.0):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(dim, eps=1e-6)
+        self.attn = Attention(dim, num_heads=num_heads, qkv_bias=True)
+        self.norm2 = nn.LayerNorm(dim, eps=1e-6)
+        mlp_hidden_dim = int(dim * mlp_ratio)
+        approx_gelu = lambda: nn.GELU(approximate="tanh")
+        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=drop)
+
+    def forward(self, x):
+        x = x + self.attn(self.norm1(x))
+        x = x + self.mlp(self.norm2(x))
+        return x
+
+class ViTHiCEncoder(nn.Module):
+    """
+    ViT-based encoder for square Hi-C matrices.
+    - input_size: W (H=W)
+    - in_channels: usually 1 (single-channel Hi-C after normalization)
+    - patch_size: patchify size for Hi-C
+    - embed_dim: internal ViT width
+    - depth, num_heads: ViT depth/heads
+    - out_dim: project to DiT hidden_size (e.g., 1152 for DiT-XL)
+    Reuses the existing 2D sin-cos pos embedding functions.
+    """
+    def __init__(
+        self,
+        input_size: int,
+        in_channels: int = 1,
+        patch_size: int = 16,
+        embed_dim: int = 512,
+        depth: int = 8,
+        num_heads: int = 8,
+        mlp_ratio: float = 4.0,
+        out_dim: int = 1152,
+        use_upper_tri: bool = True,
+    ):
+        super().__init__()
+        self.input_size = input_size
+        self.patch_embed = PatchEmbed(input_size, patch_size, in_channels, embed_dim, bias=True)
+        num_patches = self.patch_embed.num_patches
+        # Will use fixed sin-cos embedding:
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim), requires_grad=False)
+
+        if self.use_upper_tri:
+            keep_idx = _build_upper_tri_keep_indices(input_size, patch_size)
+            self.register_buffer("keep_idx", keep_idx, persistent=False)   # (S_tri,)
+        else:
+            self.keep_idx = None
+        
+        self.blocks = nn.ModuleList([
+            ViTBlock(embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
+        ])
+        self.norm = nn.LayerNorm(embed_dim, eps=1e-6)
+        self.proj_out = nn.Linear(embed_dim, out_dim, bias=True)  # map to DiT hidden size
+
+        self._init_weights()
+
+    def _init_weights(self):
+        # Initialize and freeze pos_embed with provided sin-cos function:
+        grid = int(self.patch_embed.num_patches ** 0.5)
+        pos = get_2d_sincos_pos_embed(self.pos_embed.shape[-1], grid)
+        self.pos_embed.data.copy_(torch.from_numpy(pos).float().unsqueeze(0))
+        # PatchEmbed like Linear init:
+        w = self.patch_embed.proj.weight.data
+        nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
+        nn.init.constant_(self.patch_embed.proj.bias, 0)
+
+    def forward(self, H: torch.Tensor):
+        """
+        H: (B, C, W, W) with W=input_size, C=in_channels
+        Returns:
+            cond_tokens: (B, S, out_dim) where S = (W/patch_size)^2
+        """
+        x_full = self.patch_embed(H)            # (B, S_full, embed_dim)
+        pos_full = self.pos_embed               # (1, S_full, embed_dim)
+
+        # upper triangle token/pos
+        if self.use_upper_tri:
+            idx = self.keep_idx                 # (S_tri,)
+            x = x_full.index_select(dim=1, index=idx)
+            pos = pos_full.index_select(dim=1, index=idx)
+        else:
+            x, pos = x_full, pos_full
+            
+        x = x + pos
+        for blk in self.blocks:
+            x = blk(x)
+        x = self.norm(x)
+        x = self.proj_out(x)     # (B, S, out_dim) -> to DiT hidden size
+        return x
+
 
 
 #################################################################################
@@ -101,25 +182,57 @@ class TimestepEmbedder(nn.Module):
 
 class DiTBlock(nn.Module):
     """
-    A DiT block with adaptive layer norm zero (adaLN-Zero) conditioning.
+    DiT block with:
+      - Self-attention
+      - Cross-attention (optional)
+      - MLP
+      - adaLN-zero modulation
     """
     def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, **block_kwargs):
         super().__init__()
-        self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, **block_kwargs)
-        self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        approx_gelu = lambda: nn.GELU(approximate="tanh")
-        self.mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=0)
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(hidden_size, 6 * hidden_size, bias=True)
+        self.norm1 = nn.LayerNorm(hidden_size, eps=1e-6)
+        self.self_attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True)
+
+        self.norm_cross = nn.LayerNorm(hidden_size, eps=1e-6)
+        # Cross attention
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim=hidden_size,
+            num_heads=num_heads,
+            batch_first=True,    # crucial: allow (B, T, C)
         )
 
-    def forward(self, x, c):
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
-        x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
+        self.norm2 = nn.LayerNorm(hidden_size, eps=1e-6)
+        mlp_hidden_dim = int(hidden_size * mlp_ratio)
+        approx_gelu = lambda: nn.GELU(approximate="tanh")
+        self.mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu)
+
+        # adaLN-zero
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(hidden_size, 9 * hidden_size)  # 9 groups needed now
+        )
+
+    def forward(self, x, c, cond_tokens):
+        """
+        x: (B, T_latent, D)
+        c: (B, D)               # timestep embedding
+        cond_tokens: (B, S_cond, D)  # Hi-C encoder tokens
+        """
+        # slice adaLN params
+        (
+            shift_self, scale_self, gate_self,
+            shift_cross, scale_cross, gate_cross,
+            shift_mlp, scale_mlp, gate_mlp,
+        ) = self.adaLN_modulation(c).chunk(9, dim=1)
+
+        x = x + gate_self.unsqueeze(1) * self.self_attn(modulate(self.norm1(x), shift_self, scale_self))
+
+        q = modulate(self.norm_cross(x), shift_cross, scale_cross)
+        cross_out, _ = self.cross_attn(q, cond_tokens, cond_tokens)
+        x = x + gate_cross.unsqueeze(1) * cross_out
+
         x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+
         return x
 
 
@@ -149,21 +262,19 @@ class DiT(nn.Module):
     """
     def __init__(
         self,
-        input_size=(30, 40),
+        input_size=32,  # 256 // 8, 256 * 256 images, latent size after VAE encoder with 8x downsampling
         patch_size=2,
         in_channels=4,
         hidden_size=1152,
         depth=28,
         num_heads=16,
         mlp_ratio=4.0,
-        # class_dropout_prob=0.1,
-        # num_classes=1000,
         learn_sigma=True,
     ):
         super().__init__()
         self.learn_sigma = learn_sigma
         self.in_channels = in_channels
-        self.out_channels = in_channels * 2
+        self.out_channels = in_channels * 2 if learn_sigma else in_channels
         self.patch_size = patch_size
         self.num_heads = num_heads
 
@@ -224,31 +335,26 @@ class DiT(nn.Module):
         """
         c = self.out_channels
         p = self.x_embedder.patch_size[0]
-        h = 15
-        w = 20
-        # assert h * w == x.shape[1]
+        h = w = int(x.shape[1] ** 0.5)
+        assert h * w == x.shape[1]
 
         x = x.reshape(shape=(x.shape[0], h, w, p, p, c))
         x = torch.einsum('nhwpqc->nchpwq', x)
-        imgs = x.reshape(shape=(x.shape[0], c, h * p, w * p))
-        # imgs = imgs[:, :, 1:-1, :]  # remove padding
+        imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x, t):
+    def forward(self, x, t, cond_tokens):
         """
         Forward pass of DiT.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
         t: (N,) tensor of diffusion timesteps
         y: (N,) tensor of class labels
         """
-        # x = F.pad(x, (0, 0, 1, 1), mode='reflect')
         x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
         t = self.t_embedder(t)                   # (N, D)
-        # y = self.y_embedder(y, self.training)    # (N, D)
-        # c = t + y                                # (N, D)
         c = t
         for block in self.blocks:
-            x = block(x, c)                      # (N, T, D)
+            x = block(x, c, cond_tokens)          # cross-attn injects condition each layer
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
         return x
@@ -283,12 +389,12 @@ def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False, extra_tokens=
     return:
     pos_embed: [grid_size*grid_size, embed_dim] or [1+grid_size*grid_size, embed_dim] (w/ or w/o cls_token)
     """
-    grid_h = np.arange(15, dtype=np.float32)
-    grid_w = np.arange(20, dtype=np.float32)
+    grid_h = np.arange(grid_size, dtype=np.float32)
+    grid_w = np.arange(grid_size, dtype=np.float32)
     grid = np.meshgrid(grid_w, grid_h)  # here w goes first
     grid = np.stack(grid, axis=0)
 
-    grid = grid.reshape([2, 1, 15, 20])
+    grid = grid.reshape([2, 1, grid_size, grid_size])
     pos_embed = get_2d_sincos_pos_embed_from_grid(embed_dim, grid)
     if cls_token and extra_tokens > 0:
         pos_embed = np.concatenate([np.zeros([extra_tokens, embed_dim]), pos_embed], axis=0)
