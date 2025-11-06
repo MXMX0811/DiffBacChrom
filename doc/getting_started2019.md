@@ -4,12 +4,12 @@ This is a basic Getting Started guide aimed at helping users with no prior devel
 
 The code of data simulation is implemented based on [this repository](https://github.com/JMLab-tifrh/ecoli_finer) therefore [GROMACS 2019.6](https://manual.gromacs.org/2019-current/index.html) is needed.
 
-This project requires GROMACS and runs in the Windows Subsystem for Linux (WSL).
+This project requires GROMACS and runs in a Docker container.
 
 Requirements:
 
-* Ubuntu 24.04.1 LTS
-* GCC / G++ 13.3.0
+* Docker image: Ubuntu 18.04
+* GCC / G++ 7.5.0
 * CMake 3.4.3
 * CUDA 12.6 (optional)
 * OpenMPI 5.0.5 (optional)
@@ -65,7 +65,9 @@ After the installation, a console window will open and you should create your us
 
 ### GCC / G++
 
-Later GCC version (GCC version 9 or later) is needed for the build of GROMACS. For Ubuntu 24.04.1 LTS, you can use `apt-get` command in your terminal directly (default version GCC 13 for Ubuntu 24.04.1 LTS).
+To use a version of CUDA compatible with GROMACS (CUDA 10.1 in this case), you need to select the corresponding GCC/G++ version. For CUDA 10.1, the highest supported GCC version is 8, so GCC 7.5.0 is installed here.
+
+[See here](https://gist.github.com/ax3l/9489132)
 
 ```powershell
 sudo apt-get update
@@ -305,8 +307,7 @@ tar -zxvf regressiontests-2019.6.tar.gz
 If you can get the regressiontest path correct, then you can change the option like:
 
 ```powershell
-cmake .. -DGMX_BUILD_OWN_FFTW=ON -DGMX_GPU=CUDA -DGMX_CUDA_TARGET_SM="80" -DREGRESSIONTEST_DOW
-NLOAD=OFF -DREGRESSIONTEST_PATH=../regressiontests-2019.6
+cmake .. -DGMX_BUILD_OWN_FFTW=ON -DGMX_GPU=CUDA -DGMX_CUDA_TARGET_SM="80" -DREGRESSIONTEST_DOWNLOAD=OFF -DREGRESSIONTEST_PATH=../regressiontests-2019.6
 ```
 
 Refer to:
