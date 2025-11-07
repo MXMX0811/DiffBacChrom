@@ -1,4 +1,3 @@
-
 # --------------------------------------------------------
 # References:
 # DiT: https://github.com/facebookresearch/DiT
@@ -107,7 +106,7 @@ class ViTHiCEncoder(nn.Module):
     """
     def __init__(
         self,
-        input_size: int,
+        input_size: int = 928,
         in_channels: int = 1,
         patch_size: int = 16,
         embed_dim: int = 512,
@@ -115,6 +114,8 @@ class ViTHiCEncoder(nn.Module):
         num_heads: int = 8,
         mlp_ratio: float = 4.0,
         out_dim: int = 1152,
+        dropout_prob: float = 0.1, 
+        use_learned_null: bool = True, 
         use_upper_tri: bool = True,
     ):
         super().__init__()
@@ -128,8 +129,10 @@ class ViTHiCEncoder(nn.Module):
         if self.use_upper_tri:
             keep_idx = _build_upper_tri_keep_indices(input_size, patch_size)
             self.register_buffer("keep_idx", keep_idx, persistent=False)   # (S_tri,)
+            s_cond = keep_idx.numel()
         else:
             self.keep_idx = None
+            s_cond = num_patches
         
         self.blocks = nn.ModuleList([
             ViTBlock(embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
@@ -137,6 +140,17 @@ class ViTHiCEncoder(nn.Module):
         self.norm = nn.LayerNorm(embed_dim, eps=1e-6)
         self.proj_out = nn.Linear(embed_dim, out_dim, bias=True)  # map to DiT hidden size
 
+        # dropout for condition tokens
+        # learnable null cond token
+        self.dropout_prob = float(dropout_prob)
+        self.use_dropout = self.dropout_prob > 0
+        self.use_learned_null = bool(use_learned_null)
+        if self.use_learned_null:
+            # (1, S_cond, out_dim)
+            self.null_cond = nn.Parameter(torch.zeros(1, s_cond, out_dim))
+        else:
+            self.register_buffer("null_cond", torch.zeros(1, s_cond, out_dim), persistent=False)
+        
         self._init_weights()
 
     def _init_weights(self):
@@ -148,30 +162,52 @@ class ViTHiCEncoder(nn.Module):
         w = self.patch_embed.proj.weight.data
         nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
         nn.init.constant_(self.patch_embed.proj.bias, 0)
-
-    def forward(self, H: torch.Tensor):
+        
+    def token_drop(self, batch_size: int, device: torch.device, force_drop_ids: torch.Tensor | None = None):
+        if force_drop_ids is None:
+            drop_ids = torch.rand(batch_size, device=device) < self.dropout_prob
+        else:
+            drop_ids = (force_drop_ids == 1)
+        return drop_ids
+    
+    def encode(self, H: torch.Tensor):
         """
-        H: (B, C, W, W) with W=input_size, C=in_channels
-        Returns:
-            cond_tokens: (B, S, out_dim) where S = (W/patch_size)^2
+        Encoding without dropout (for inference).
+        input: H (B, C, W, W)
+        Output: cond_tokens (B, S_cond, out_dim)
         """
-        x_full = self.patch_embed(H)            # (B, S_full, embed_dim)
-        pos_full = self.pos_embed               # (1, S_full, embed_dim)
-
-        # upper triangle token/pos
+        x_full = self.patch_embed(H)                # (B, S_full, embed_dim)
+        pos_full = self.pos_embed.to(x_full.dtype)  # (1, S_full, embed_dim)
         if self.use_upper_tri:
-            idx = self.keep_idx                 # (S_tri,)
+            idx = self.keep_idx
             x = x_full.index_select(dim=1, index=idx)
             pos = pos_full.index_select(dim=1, index=idx)
         else:
             x, pos = x_full, pos_full
-            
+
         x = x + pos
         for blk in self.blocks:
             x = blk(x)
         x = self.norm(x)
-        x = self.proj_out(x)     # (B, S, out_dim) -> to DiT hidden size
+        x = self.proj_out(x)                    # (B, S_cond, out_dim)
         return x
+
+    def forward(self, H: torch.Tensor, train: bool, force_drop_ids: torch.Tensor | None = None):
+        """
+        For training with condition dropout.
+        """
+        cond = self.encode(H)   # (B, S_cond, out_dim)
+        B = cond.shape[0]
+        if (train and self.use_dropout) or (force_drop_ids is not None):
+            drop_ids = self.token_drop(B, cond.device, force_drop_ids)  # (B,)
+            if drop_ids.any():
+                null = self.null_cond.to(cond.dtype).expand(B, -1, -1)
+                cond = torch.where(drop_ids.view(B, 1, 1), null, cond)
+        return cond
+
+    @torch.no_grad()
+    def null_tokens(self, batch: int, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+        return self.null_cond.to(device=device, dtype=dtype).expand(batch, -1, -1)
 
 
 #################################################################################
@@ -227,7 +263,7 @@ class DiTBlock(nn.Module):
 
         if self.use_cross_attn:
             q = modulate(self.norm_cross(x), shift_cross, scale_cross)
-            cross_out, _ = self.cross_attn(q, cond_tokens, cond_tokens)
+            cross_out, _ = self.cross_attn(q, cond_tokens, cond_tokens, need_weights=False)
             x = x + gate_cross.unsqueeze(1) * cross_out
 
         x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
@@ -282,7 +318,8 @@ class DiT(nn.Module):
 
         self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
         self.t_embedder = TimestepEmbedder(hidden_size)
-        # self.y_embedder = LabelEmbedder(num_classes, hidden_size, class_dropout_prob)
+        self.hic_encoder = ViTHiCEncoder(out_dim=hidden_size)
+        assert self.hic_encoder.proj_out.out_features == hidden_size
         num_patches = self.x_embedder.num_patches
 
         # Will use fixed sin-cos embedding:
@@ -316,8 +353,10 @@ class DiT(nn.Module):
         nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
         nn.init.constant_(self.x_embedder.proj.bias, 0)
 
-        # Initialize label embedding table:
-        # nn.init.normal_(self.y_embedder.embedding_table.weight, std=0.02)
+        # Initialize hic_encoder:
+        if getattr(self.hic_encoder, "use_learned_null", False):
+            with torch.no_grad():
+                nn.init.normal_(self.hic_encoder.null_cond, std=0.02)
 
         # Initialize timestep embedding MLP:
         nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
@@ -349,14 +388,17 @@ class DiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x, t, cond_tokens):
+    def forward(self, x, t, H):
         """
         Forward pass of DiT.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
         t: (N,) tensor of diffusion timesteps
-        y: (N,) tensor of class labels
+        H: tensor hic matrices
         """
-        x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
+        cond_tokens = self.hic_encoder(H, train=self.training)
+        
+        x = self.x_embedder(x)
+        x = x + self.pos_embed.to(x.dtype)  # (N, T, D), where T = H * W / patch_size ** 2
         t = self.t_embedder(t)                   # (N, D)
         c = t
         
@@ -370,17 +412,43 @@ class DiT(nn.Module):
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
         return x
 
-    def forward_with_cfg(self, x, t, cond_tokens, cfg_scale):
-        half = x[: len(x) // 2]
-        cond_half = cond_tokens[: len(cond_tokens) // 2]
-        combined_x = torch.cat([half, half], dim=0)
-        combined_cond = torch.cat([cond_half, torch.zeros_like(cond_half)], dim=0)  # unconditional by zeroing cond
-        model_out = self.forward(combined_x, t, combined_cond)
-        eps, rest = model_out[:, :3], model_out[:, 3:]
-        cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
-        half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
-        eps = torch.cat([half_eps, half_eps], dim=0)
-        return torch.cat([eps, rest], dim=1)
+    def forward_with_cfg(self, x, t, H, cfg_scale):
+        """
+        CFG forward pass of DiT inference
+        """
+        N = x.shape[0]
+        assert N % 2 == 0
+        half = N // 2
+
+        x_half = x[:half]
+        t_half = t[:half]
+        H_half = H[:half]
+
+        combined_x = torch.cat([x_half, x_half], dim=0)
+        combined_t = torch.cat([t_half, t_half], dim=0)
+
+        cond_half = self.hic_encoder.encode(H_half)
+        uncond_half = self.hic_encoder.null_tokens(half, dtype=cond_half.dtype, device=cond_half.device)
+
+        combined_cond = torch.cat([cond_half, uncond_half], dim=0)
+
+        x = self.x_embedder(combined_x)
+        x = x + self.pos_embed.to(x.dtype)
+        t = self.t_embedder(combined_t)
+        c = t
+
+        for block in self.blocks:
+            x = block(x, c, combined_cond)
+
+        model_out = self.final_layer(x, c)
+        model_out = self.unpatchify(model_out) 
+        
+        cond_out, uncond_out = torch.split(model_out, half, dim=0)       # (N/2, out_ch, H, W)
+
+        guided_half = uncond_out + cfg_scale * (cond_out - uncond_out)   # (N/2, out_ch, H, W)
+
+        out = torch.cat([guided_half, guided_half], dim=0)               # (N, out_ch, H, W)
+        return out
 
 
 #################################################################################

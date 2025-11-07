@@ -68,7 +68,7 @@ class RF:
             t = i / sample_steps
             t = torch.tensor([t] * b).to(z.device)
 
-            vc = self.model(z, t)
+            vc = self.model.encode(z, t)
             
             B, C = z.shape[:2]
             assert vc.shape == (B, C * 2, *z.shape[2:])
