@@ -175,17 +175,17 @@ if __name__ == "__main__":
     dataset = TextureDataset(root_dir, transform=transform, paired_transform=paired_transform)
     dataloader = DataLoader(dataset, batch_size=8, shuffle=True, num_workers=4)
     
-    ckpt_path = f"DiT-XL-2-256x256.pt"
-    state_dict = find_model(ckpt_path)
+    # ckpt_path = f"DiT-XL-2-256x256.pt"
+    # state_dict = find_model(ckpt_path)
 
     # delete positional embedding
     # pre-trained positional embedding is 16x16 grid
     # new positional embedding is 15x20 (240x320 -> VAE -> 30x40 -> pachify 2 -> 15x20)
-    state_dict = {k: v for k, v in state_dict.items() if 'pos_embed' not in k}
+    # state_dict = {k: v for k, v in state_dict.items() if 'pos_embed' not in k}
 
-    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
-    print('Missing keys:', missing_keys)
-    print('Unexpected keys:', unexpected_keys)
+    # missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    # print('Missing keys:', missing_keys)
+    # print('Unexpected keys:', unexpected_keys)
     model = model.cuda()
     
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-ema").cuda()

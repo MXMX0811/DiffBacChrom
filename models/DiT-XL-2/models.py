@@ -1,10 +1,7 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
 
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
 # --------------------------------------------------------
 # References:
+# DiT: https://github.com/facebookresearch/DiT
 # GLIDE: https://github.com/openai/glide-text2im
 # MAE: https://github.com/facebookresearch/mae/blob/main/models_mae.py
 # --------------------------------------------------------
@@ -14,6 +11,7 @@ import torch.nn as nn
 import numpy as np
 import math
 import torch.nn.functional as F
+import torch.utils.checkpoint as cp
 from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
 
 
@@ -188,17 +186,17 @@ class DiTBlock(nn.Module):
       - MLP
       - adaLN-zero modulation
     """
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, **block_kwargs):
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, use_cross_attn: bool = True, **block_kwargs):
         super().__init__()
+        self.use_cross_attn = use_cross_attn
+        
         self.norm1 = nn.LayerNorm(hidden_size, eps=1e-6)
         self.self_attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True)
 
         self.norm_cross = nn.LayerNorm(hidden_size, eps=1e-6)
         # Cross attention
         self.cross_attn = nn.MultiheadAttention(
-            embed_dim=hidden_size,
-            num_heads=num_heads,
-            batch_first=True,    # crucial: allow (B, T, C)
+            embed_dim=hidden_size, num_heads=num_heads, batch_first=True,    # crucial: allow (B, T, C)
         )
 
         self.norm2 = nn.LayerNorm(hidden_size, eps=1e-6)
@@ -227,9 +225,10 @@ class DiTBlock(nn.Module):
 
         x = x + gate_self.unsqueeze(1) * self.self_attn(modulate(self.norm1(x), shift_self, scale_self))
 
-        q = modulate(self.norm_cross(x), shift_cross, scale_cross)
-        cross_out, _ = self.cross_attn(q, cond_tokens, cond_tokens)
-        x = x + gate_cross.unsqueeze(1) * cross_out
+        if self.use_cross_attn:
+            q = modulate(self.norm_cross(x), shift_cross, scale_cross)
+            cross_out, _ = self.cross_attn(q, cond_tokens, cond_tokens)
+            x = x + gate_cross.unsqueeze(1) * cross_out
 
         x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
 
@@ -269,9 +268,12 @@ class DiT(nn.Module):
         depth=28,
         num_heads=16,
         mlp_ratio=4.0,
+        cross_attn_interval: int = 4,   # use cross-attn every N layers
         learn_sigma=True,
+        gradient_checkpointing=True,   # allow gradient checkpointing to save memory
     ):
         super().__init__()
+        self.gradient_checkpointing = gradient_checkpointing
         self.learn_sigma = learn_sigma
         self.in_channels = in_channels
         self.out_channels = in_channels * 2 if learn_sigma else in_channels
@@ -286,9 +288,13 @@ class DiT(nn.Module):
         # Will use fixed sin-cos embedding:
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
 
-        self.blocks = nn.ModuleList([
-            DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
-        ])
+        self.blocks = nn.ModuleList()
+        for i in range(depth):
+            use_cross = (cross_attn_interval is not None) and ((i + 1) % cross_attn_interval == 0)
+            self.blocks.append(
+                DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio, use_cross_attn=use_cross)
+            )
+            
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
         self.initialize_weights()
 
@@ -353,8 +359,13 @@ class DiT(nn.Module):
         x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
         t = self.t_embedder(t)                   # (N, D)
         c = t
+        
         for block in self.blocks:
-            x = block(x, c, cond_tokens)          # cross-attn injects condition each layer
+            if self.gradient_checkpointing:
+                x = cp.checkpoint(block, x, c, cond_tokens, use_reentrant=False)
+            else:
+                x = block(x, c, cond_tokens)          # cross-attn injects condition each layer
+                
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
         return x
