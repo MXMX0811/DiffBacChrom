@@ -396,11 +396,12 @@ class DiT(nn.Module):
         H: tensor hic matrices
         """
         cond_tokens = self.hic_encoder(H, train=self.training)
+        y = cond_tokens.mean(dim=1)  
         
         x = self.x_embedder(x)
         x = x + self.pos_embed.to(x.dtype)  # (N, T, D), where T = H * W / patch_size ** 2
         t = self.t_embedder(t)                   # (N, D)
-        c = t
+        c = t + y
         
         for block in self.blocks:
             if self.gradient_checkpointing:
@@ -430,12 +431,15 @@ class DiT(nn.Module):
         cond_half = self.hic_encoder.encode(H_half)
         uncond_half = self.hic_encoder.null_tokens(half, dtype=cond_half.dtype, device=cond_half.device)
 
+        y_cond = cond_half.mean(dim=1)                 # (half, D)
+        y_uncond = torch.zeros_like(y_cond)
+        
         combined_cond = torch.cat([cond_half, uncond_half], dim=0)
 
         x = self.x_embedder(combined_x)
         x = x + self.pos_embed.to(x.dtype)
         t = self.t_embedder(combined_t)
-        c = t
+        c = torch.cat([t[:half] + y_cond, t[half:] + y_uncond], dim=0)
 
         for block in self.blocks:
             x = block(x, c, combined_cond)
