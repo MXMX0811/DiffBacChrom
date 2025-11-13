@@ -2,7 +2,7 @@
  * @Author: Mingxin Zhang m.zhang@hapis.k.u-tokyo.ac.jp
  * @Date: 2025-11-07 17:15:19
  * @LastEditors: Mingxin Zhang
- * @LastEditTime: 2025-11-14 03:12:42
+ * @LastEditTime: 2025-11-14 03:21:12
  * Copyright (c) 2025 by Mingxin Zhang, All Rights Reserved. 
 -->
 # Getting started
@@ -16,6 +16,5 @@ Environment:
 * Docker image: Ubuntu 18.04
 * GCC / G++ 7.5.0
 * CMake 3.4.3
-* CUDA 10.6 (optional)
-* OpenMPI 5.0.5 (optional)
-* Python 3.13.9
+* CUDA 10.1 (optional)
+* Python 3.13.5
