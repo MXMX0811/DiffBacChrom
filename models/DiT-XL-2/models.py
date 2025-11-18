@@ -66,17 +66,6 @@ class TimestepEmbedder(nn.Module):
 #                                   HiC Encoder                                 #
 #################################################################################
 
-def _build_upper_tri_keep_indices(input_size: int, patch_size: int) -> torch.Tensor:
-    assert input_size % patch_size == 0, "input_size must be divisible by patch_size"
-    gh = gw = input_size // patch_size
-    keep = []
-    for r in range(gh):
-        for c in range(gw):
-            if r <= c:
-                keep.append(r * gw + c)
-    return torch.tensor(keep, dtype=torch.long)
-
-
 class ViTBlock(nn.Module):
     """ViT block used in HiC encoder."""
     def __init__(self, dim, num_heads, mlp_ratio=4.0, drop=0.0):
