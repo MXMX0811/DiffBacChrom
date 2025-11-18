@@ -98,17 +98,17 @@ class ViTHiCEncoder(nn.Module):
     ViT-based encoder for square Hi-C matrices.
     - input_size: W (H=W)
     - in_channels: usually 1 (single-channel Hi-C after normalization)
-    - patch_size: patchify size for Hi-C
+    - patch_size: unused in 1D bin encoder (kept for API compatibility)  # MODIFIED
     - embed_dim: internal ViT width
     - depth, num_heads: ViT depth/heads
     - out_dim: project to DiT hidden_size (e.g., 1152 for DiT-XL)
-    Reuses the existing 2D sin-cos pos embedding functions.
+    Reuses the existing 1D sin-cos pos embedding functions over bins.       # MODIFIED
     """
     def __init__(
         self,
         input_size: int = 928,
         in_channels: int = 1,
-        patch_size: int = 16,
+        patch_size: int = 16,          # kept but no longer used         # MODIFIED
         embed_dim: int = 512,
         depth: int = 8,
         num_heads: int = 8,
@@ -116,23 +116,24 @@ class ViTHiCEncoder(nn.Module):
         out_dim: int = 1152,
         dropout_prob: float = 0.1, 
         use_learned_null: bool = True, 
-        use_upper_tri: bool = True,
+        use_upper_tri: bool = True,    # kept for compatibility, ignored # MODIFIED
     ):
         super().__init__()
-        self.input_size = input_size
-        self.use_upper_tri = use_upper_tri
-        self.patch_embed = PatchEmbed(input_size, patch_size, in_channels, embed_dim, bias=True)
-        num_patches = self.patch_embed.num_patches
-        # Will use fixed sin-cos embedding:
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim), requires_grad=False)
+        self.input_size = input_size           # W
+        self.in_channels = in_channels         # MODIFIED
+        self.embed_dim = embed_dim             # MODIFIED
+        self.use_upper_tri = use_upper_tri     # MODIFIED: no longer used internally
 
-        if self.use_upper_tri:
-            keep_idx = _build_upper_tri_keep_indices(input_size, patch_size)
-            self.register_buffer("keep_idx", keep_idx, persistent=False)   # (S_tri,)
-            s_cond = keep_idx.numel()
-        else:
-            self.keep_idx = None
-            s_cond = num_patches
+        # MODIFIED: instead of 2D PatchEmbed, use a 1D "row" embedder over bins
+        # For each bin i, take the Hi-C row H[:, :, i, :] (contacts to all bins, length W)
+        # and project it to embed_dim as a token.
+        self.row_embed = nn.Linear(input_size, embed_dim, bias=True)      # MODIFIED
+
+        # sequence length for cond tokens is exactly W (one token per bin)
+        s_cond = input_size                                                # MODIFIED
+
+        # Will use fixed 1D sin-cos embedding over bins:
+        self.pos_embed = nn.Parameter(torch.zeros(1, s_cond, embed_dim), requires_grad=False)  # MODIFIED
         
         self.blocks = nn.ModuleList([
             ViTBlock(embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
@@ -154,15 +155,16 @@ class ViTHiCEncoder(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        # Initialize and freeze pos_embed with provided sin-cos function:
-        grid = int(self.patch_embed.num_patches ** 0.5)
-        pos = get_2d_sincos_pos_embed(self.pos_embed.shape[-1], grid)
-        self.pos_embed.data.copy_(torch.from_numpy(pos).float().unsqueeze(0))
-        # PatchEmbed like Linear init:
-        w = self.patch_embed.proj.weight.data
-        nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
-        nn.init.constant_(self.patch_embed.proj.bias, 0)
-        
+        # MODIFIED: Initialize and freeze pos_embed with 1D sin-cos over bin indices [0..W-1]
+        grid = np.arange(self.input_size, dtype=np.float32)  # (W,)          # MODIFIED
+        pos = get_1d_sincos_pos_embed_from_grid(self.pos_embed.shape[-1], grid)  # MODIFIED
+        self.pos_embed.data.copy_(torch.from_numpy(pos).float().unsqueeze(0))    # MODIFIED
+
+        # MODIFIED: initialize row_embed like a Linear layer
+        w = self.row_embed.weight.data                                         # MODIFIED
+        nn.init.xavier_uniform_(w)                                             # MODIFIED
+        nn.init.constant_(self.row_embed.bias, 0)                              # MODIFIED
+
     def token_drop(self, batch_size: int, device: torch.device, force_drop_ids: torch.Tensor | None = None):
         if force_drop_ids is None:
             drop_ids = torch.rand(batch_size, device=device) < self.dropout_prob
@@ -174,29 +176,34 @@ class ViTHiCEncoder(nn.Module):
         """
         Encoding without dropout (for inference).
         input: H (B, C, W, W)
-        Output: cond_tokens (B, S_cond, out_dim)
+        Output: cond_tokens (B, W, out_dim), one token per bin.          # MODIFIED
         """
-        x_full = self.patch_embed(H)                # (B, S_full, embed_dim)
-        pos_full = self.pos_embed.to(x_full.dtype)  # (1, S_full, embed_dim)
-        if self.use_upper_tri:
-            idx = self.keep_idx
-            x = x_full.index_select(dim=1, index=idx)
-            pos = pos_full.index_select(dim=1, index=idx)
-        else:
-            x, pos = x_full, pos_full
+        B, C, W, W2 = H.shape                                              # MODIFIED
+        assert W == W2 == self.input_size, "Hi-C must be square W x W"     # MODIFIED
 
-        x = x + pos
+        # MODIFIED: collapse channel dimension (usually C=1) into a single Hi-C map per sample
+        H_mean = H.mean(dim=1)                                            # (B, W, W)  # MODIFIED
+
+        # MODIFIED: for each bin i, use its Hi-C row as input features
+        # H_mean[:, i, :] is the contact profile of bin i to all bins (length W)
+        # row_embed maps (W,) -> (embed_dim,)
+        # We apply row_embed along the last dimension.
+        x = self.row_embed(H_mean)                                        # (B, W, embed_dim)  # MODIFIED
+
+        pos = self.pos_embed.to(x.dtype)                                  # (1, W, embed_dim)  # MODIFIED
+        x = x + pos                                                       # (B, W, embed_dim)  # MODIFIED
+
         for blk in self.blocks:
             x = blk(x)
         x = self.norm(x)
-        x = self.proj_out(x)                    # (B, S_cond, out_dim)
+        x = self.proj_out(x)                    # (B, W, out_dim)         # MODIFIED
         return x
 
     def forward(self, H: torch.Tensor, train: bool, force_drop_ids: torch.Tensor | None = None):
         """
         For training with condition dropout.
         """
-        cond = self.encode(H)   # (B, S_cond, out_dim)
+        cond = self.encode(H)   # (B, W, out_dim)                          # MODIFIED
         B = cond.shape[0]
         if (train and self.use_dropout) or (force_drop_ids is not None):
             drop_ids = self.token_drop(B, cond.device, force_drop_ids)  # (B,)
@@ -278,7 +285,8 @@ class FinalLayer(nn.Module):
     def __init__(self, hidden_size, patch_size, out_channels):
         super().__init__()
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
+        # MODIFIED: output dimension changed from patch_size * patch_size * out_channels to out_channels
+        self.linear = nn.Linear(hidden_size, out_channels, bias=True)  # MODIFIED
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(hidden_size, 2 * hidden_size, bias=True)
@@ -297,7 +305,7 @@ class DiT(nn.Module):
     """
     def __init__(
         self,
-        input_size=32,  # 256 // 8, 256 * 256 images, latent size after VAE encoder with 8x downsampling
+        input_size=928,  # MODIFIED: sequence length (should match HiC W, e.g., 928)
         patch_size=2,
         in_channels=4,
         hidden_size=1152,
@@ -316,11 +324,15 @@ class DiT(nn.Module):
         self.patch_size = patch_size
         self.num_heads = num_heads
 
-        self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
+        # MODIFIED: use Linear as 1D sequence embedder instead of 2D PatchEmbed
+        self.x_embedder = nn.Linear(in_channels, hidden_size, bias=True)  # MODIFIED
+        self.seq_len = input_size  # MODIFIED: interpret input_size as sequence length
+        num_patches = self.seq_len  # MODIFIED
+
         self.t_embedder = TimestepEmbedder(hidden_size)
-        self.hic_encoder = ViTHiCEncoder(out_dim=hidden_size)
+        # MODIFIED: pass input_size from DiT to HiC encoder so W is shared
+        self.hic_encoder = ViTHiCEncoder(input_size=input_size, out_dim=hidden_size)  # MODIFIED
         assert self.hic_encoder.proj_out.out_features == hidden_size
-        num_patches = self.x_embedder.num_patches
 
         # Will use fixed sin-cos embedding:
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
@@ -344,14 +356,14 @@ class DiT(nn.Module):
                     nn.init.constant_(module.bias, 0)
         self.apply(_basic_init)
 
-        # Initialize (and freeze) pos_embed by sin-cos embedding:
-        pos_embed = get_2d_sincos_pos_embed(self.pos_embed.shape[-1], int(self.x_embedder.num_patches ** 0.5))
-        self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
+        # MODIFIED: Initialize (and freeze) pos_embed by 1D sin-cos embedding over sequence length
+        pos = get_1d_sincos_pos_embed_from_grid(self.pos_embed.shape[-1], np.arange(self.seq_len, dtype=np.float32))  # MODIFIED
+        self.pos_embed.data.copy_(torch.from_numpy(pos).float().unsqueeze(0))  # MODIFIED
 
-        # Initialize patch_embed like nn.Linear (instead of nn.Conv2d):
-        w = self.x_embedder.proj.weight.data
-        nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
-        nn.init.constant_(self.x_embedder.proj.bias, 0)
+        # MODIFIED: Initialize x_embedder like nn.Linear
+        w = self.x_embedder.weight.data  # MODIFIED
+        nn.init.xavier_uniform_(w)       # MODIFIED
+        nn.init.constant_(self.x_embedder.bias, 0)  # MODIFIED
 
         # Initialize hic_encoder:
         if getattr(self.hic_encoder, "use_learned_null", False):
@@ -375,31 +387,27 @@ class DiT(nn.Module):
 
     def unpatchify(self, x):
         """
-        x: (N, T, patch_size**2 * C)
-        imgs: (N, H, W, C)
-        """
-        c = self.out_channels
-        p = self.x_embedder.patch_size[0]
-        h = w = int(x.shape[1] ** 0.5)
-        assert h * w == x.shape[1]
-
-        x = x.reshape(shape=(x.shape[0], h, w, p, p, c))
-        x = torch.einsum('nhwpqc->nchpwq', x)
-        imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
-        return imgs
+        x: (N, T, C_out)
+        imgs: (N, C_out, T) sequence outputs (channels-first)
+        """  # MODIFIED_COMMENT: docstring updated for sequence output
+        # MODIFIED: for sequence, simply return (N, C, T)
+        c = self.out_channels  # MODIFIED
+        imgs = x.permute(0, 2, 1)  # (N, C, T)  # MODIFIED
+        return imgs  # MODIFIED
 
     def forward(self, x, t, H):
         """
         Forward pass of DiT.
-        x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
+        x: (N, T, C_in) tensor of sequence inputs (e.g., per-token latent representations)
         t: (N,) tensor of diffusion timesteps
         H: tensor hic matrices
-        """
+        """  # MODIFIED_COMMENT: updated x description to sequence format
         cond_tokens = self.hic_encoder(H, train=self.training)
         y = cond_tokens.mean(dim=1)  
         
-        x = self.x_embedder(x)
-        x = x + self.pos_embed.to(x.dtype)  # (N, T, D), where T = H * W / patch_size ** 2
+        # MODIFIED: expect x as (N, T, C) and use Linear embedder
+        x = self.x_embedder(x)  # (N, T, D)  # MODIFIED
+        x = x + self.pos_embed.to(x.dtype)  # (N, T, D)
         t = self.t_embedder(t)                   # (N, D)
         c = t + y
         
@@ -409,14 +417,14 @@ class DiT(nn.Module):
             else:
                 x = block(x, c, cond_tokens)          # cross-attn injects condition each layer
                 
-        x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
-        x = self.unpatchify(x)                   # (N, out_channels, H, W)
+        x = self.final_layer(x, c)                # (N, T, out_channels)  # MODIFIED
+        x = self.unpatchify(x)                   # (N, out_channels, T)   # MODIFIED
         return x
 
     def forward_with_cfg(self, x, t, H, cfg_scale):
         """
-        CFG forward pass of DiT inference
-        """
+        CFG forward pass of DiT inference on sequence inputs.
+        """  # MODIFIED_COMMENT: clarify it's for sequence inputs
         N = x.shape[0]
         assert N % 2 == 0
         half = N // 2
@@ -436,7 +444,8 @@ class DiT(nn.Module):
         
         combined_cond = torch.cat([cond_half, uncond_half], dim=0)
 
-        x = self.x_embedder(combined_x)
+        # MODIFIED: expect combined_x as (N, T, C) and use Linear embedder
+        x = self.x_embedder(combined_x)  # (N, T, D)  # MODIFIED
         x = x + self.pos_embed.to(x.dtype)
         t = self.t_embedder(combined_t)
         c = torch.cat([t[:half] + y_cond, t[half:] + y_uncond], dim=0)
@@ -444,14 +453,14 @@ class DiT(nn.Module):
         for block in self.blocks:
             x = block(x, c, combined_cond)
 
-        model_out = self.final_layer(x, c)
-        model_out = self.unpatchify(model_out) 
+        model_out = self.final_layer(x, c)      # (N, T, out_channels)  # MODIFIED
+        model_out = self.unpatchify(model_out)  # (N, out_channels, T)  # MODIFIED
         
-        cond_out, uncond_out = torch.split(model_out, half, dim=0)       # (N/2, out_ch, H, W)
+        cond_out, uncond_out = torch.split(model_out, half, dim=0)       # (N/2, out_ch, T)  # MODIFIED
 
-        guided_half = uncond_out + cfg_scale * (cond_out - uncond_out)   # (N/2, out_ch, H, W)
+        guided_half = uncond_out + cfg_scale * (cond_out - uncond_out)   # (N/2, out_ch, T)  # MODIFIED
 
-        out = torch.cat([guided_half, guided_half], dim=0)               # (N, out_ch, H, W)
+        out = torch.cat([guided_half, guided_half], dim=0)               # (N, out_ch, T)    # MODIFIED
         return out
 
 
