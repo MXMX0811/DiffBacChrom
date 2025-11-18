@@ -1,17 +1,10 @@
-# --------------------------------------------------------
-# References:
-# DiT: https://github.com/facebookresearch/DiT
-# GLIDE: https://github.com/openai/glide-text2im
-# MAE: https://github.com/facebookresearch/mae/blob/main/models_mae.py
-# --------------------------------------------------------
-
 import torch
 import torch.nn as nn
 import numpy as np
 import math
 import torch.nn.functional as F
 import torch.utils.checkpoint as cp
-from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
+from timm.models.vision_transformer import Attention, Mlp
 
 
 def modulate(x, shift, scale):
@@ -40,12 +33,11 @@ class TimestepEmbedder(nn.Module):
         """
         Create sinusoidal timestep embeddings.
         :param t: a 1-D Tensor of N indices, one per batch element.
-                          These may be fractional.
+                  These may be fractional.
         :param dim: the dimension of the output.
         :param max_period: controls the minimum frequency of the embeddings.
         :return: an (N, D) Tensor of positional embeddings.
         """
-        # https://github.com/openai/glide-text2im/blob/main/glide_text2im/nn.py
         half = dim // 2
         freqs = torch.exp(
             -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
@@ -82,46 +74,40 @@ class EncoderBlock(nn.Module):
         x = x + self.mlp(self.norm2(x))
         return x
 
+
 class HiCEncoder(nn.Module):
     """
     ViT-based encoder for square Hi-C matrices.
     - input_size: W (H=W)
-    - in_channels: usually 1 (single-channel Hi-C after normalization)
-    - patch_size: unused in 1D bin encoder (kept for API compatibility)  # MODIFIED
     - embed_dim: internal ViT width
     - depth, num_heads: ViT depth/heads
     - out_dim: project to DiT hidden_size (e.g., 1152 for DiT-XL)
-    Reuses the existing 1D sin-cos pos embedding functions over bins.       # MODIFIED
+    Reuses the existing 1D sin-cos pos embedding functions over bins.
     """
     def __init__(
         self,
         input_size: int = 928,
-        in_channels: int = 1,
         embed_dim: int = 512,
         depth: int = 8,
         num_heads: int = 8,
         mlp_ratio: float = 4.0,
         out_dim: int = 1152,
-        dropout_prob: float = 0.1, 
-        use_learned_null: bool = True, 
-        use_upper_tri: bool = True,    # kept for compatibility, ignored # MODIFIED
+        dropout_prob: float = 0.1,
+        use_learned_null: bool = True,
     ):
         super().__init__()
-        self.input_size = input_size           # W
-        self.in_channels = in_channels         # MODIFIED
-        self.embed_dim = embed_dim             # MODIFIED
-        self.use_upper_tri = use_upper_tri     # MODIFIED: no longer used internally
+        self.input_size = input_size
+        self.embed_dim = embed_dim
 
-        # MODIFIED: instead of 2D PatchEmbed, use a 1D "row" embedder over bins
         # For each bin i, take the Hi-C row H[:, :, i, :] (contacts to all bins, length W)
         # and project it to embed_dim as a token.
-        self.row_embed = nn.Linear(input_size, embed_dim, bias=True)      # MODIFIED
+        self.row_embed = nn.Linear(input_size, embed_dim, bias=True)
 
         # sequence length for cond tokens is exactly W (one token per bin)
-        s_cond = input_size                                                # MODIFIED
+        s_cond = input_size
 
-        # Will use fixed 1D sin-cos embedding over bins:
-        self.pos_embed = nn.Parameter(torch.zeros(1, s_cond, embed_dim), requires_grad=False)  # MODIFIED
+        # fixed 1D sin-cos embedding over bins:
+        self.pos_embed = nn.Parameter(torch.zeros(1, s_cond, embed_dim), requires_grad=False)
         
         self.blocks = nn.ModuleList([
             EncoderBlock(embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
@@ -130,7 +116,6 @@ class HiCEncoder(nn.Module):
         self.proj_out = nn.Linear(embed_dim, out_dim, bias=True)  # map to DiT hidden size
 
         # dropout for condition tokens
-        # learnable null cond token
         self.dropout_prob = float(dropout_prob)
         self.use_dropout = self.dropout_prob > 0
         self.use_learned_null = bool(use_learned_null)
@@ -143,15 +128,15 @@ class HiCEncoder(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        # MODIFIED: Initialize and freeze pos_embed with 1D sin-cos over bin indices [0..W-1]
-        grid = np.arange(self.input_size, dtype=np.float32)  # (W,)          # MODIFIED
-        pos = get_1d_sincos_pos_embed_from_grid(self.pos_embed.shape[-1], grid)  # MODIFIED
-        self.pos_embed.data.copy_(torch.from_numpy(pos).float().unsqueeze(0))    # MODIFIED
+        # Initialize and freeze pos_embed with 1D sin-cos over bin indices [0..W-1]
+        grid = np.arange(self.input_size, dtype=np.float32)  # (W,)
+        pos = get_1d_sincos_pos_embed_from_grid(self.pos_embed.shape[-1], grid)
+        self.pos_embed.data.copy_(torch.from_numpy(pos).float().unsqueeze(0))
 
-        # MODIFIED: initialize row_embed like a Linear layer
-        w = self.row_embed.weight.data                                         # MODIFIED
-        nn.init.xavier_uniform_(w)                                             # MODIFIED
-        nn.init.constant_(self.row_embed.bias, 0)                              # MODIFIED
+        # initialize row_embed like a Linear layer
+        w = self.row_embed.weight.data
+        nn.init.xavier_uniform_(w)
+        nn.init.constant_(self.row_embed.bias, 0)
 
     def token_drop(self, batch_size: int, device: torch.device, force_drop_ids: torch.Tensor | None = None):
         if force_drop_ids is None:
@@ -164,34 +149,31 @@ class HiCEncoder(nn.Module):
         """
         Encoding without dropout (for inference).
         input: H (B, C, W, W)
-        Output: cond_tokens (B, W, out_dim), one token per bin.          # MODIFIED
+        Output: cond_tokens (B, W, out_dim), one token per bin.
         """
-        B, C, W, W2 = H.shape                                              # MODIFIED
-        assert W == W2 == self.input_size, "Hi-C must be square W x W"     # MODIFIED
+        B, C, W, W2 = H.shape
+        assert W == W2 == self.input_size, "Hi-C must be square W x W"
 
-        # MODIFIED: collapse channel dimension (usually C=1) into a single Hi-C map per sample
-        H_mean = H.mean(dim=1)                                            # (B, W, W)  # MODIFIED
+        # collapse channel dimension (usually C=1) into a single Hi-C map per sample
+        H_mean = H.mean(dim=1)  # (B, W, W)
 
-        # MODIFIED: for each bin i, use its Hi-C row as input features
-        # H_mean[:, i, :] is the contact profile of bin i to all bins (length W)
-        # row_embed maps (W,) -> (embed_dim,)
-        # We apply row_embed along the last dimension.
-        x = self.row_embed(H_mean)                                        # (B, W, embed_dim)  # MODIFIED
+        # for each bin i, use its Hi-C row as input features
+        x = self.row_embed(H_mean)  # (B, W, embed_dim)
 
-        pos = self.pos_embed.to(x.dtype)                                  # (1, W, embed_dim)  # MODIFIED
-        x = x + pos                                                       # (B, W, embed_dim)  # MODIFIED
+        pos = self.pos_embed.to(x.dtype)  # (1, W, embed_dim)
+        x = x + pos  # (B, W, embed_dim)
 
         for blk in self.blocks:
             x = blk(x)
         x = self.norm(x)
-        x = self.proj_out(x)                    # (B, W, out_dim)         # MODIFIED
+        x = self.proj_out(x)  # (B, W, out_dim)
         return x
 
     def forward(self, H: torch.Tensor, train: bool, force_drop_ids: torch.Tensor | None = None):
         """
         For training with condition dropout.
         """
-        cond = self.encode(H)   # (B, W, out_dim)                          # MODIFIED
+        cond = self.encode(H)   # (B, W, out_dim)
         B = cond.shape[0]
         if (train and self.use_dropout) or (force_drop_ids is not None):
             drop_ids = self.token_drop(B, cond.device, force_drop_ids)  # (B,)
@@ -217,7 +199,7 @@ class DiTBlock(nn.Module):
       - MLP
       - adaLN-zero modulation
     """
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, use_cross_attn: bool = True, **block_kwargs):
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, use_cross_attn: bool = True):
         super().__init__()
         self.use_cross_attn = use_cross_attn
         
@@ -227,7 +209,7 @@ class DiTBlock(nn.Module):
         self.norm_cross = nn.LayerNorm(hidden_size, eps=1e-6)
         # Cross attention
         self.cross_attn = nn.MultiheadAttention(
-            embed_dim=hidden_size, num_heads=num_heads, batch_first=True,    # crucial: allow (B, T, C)
+            embed_dim=hidden_size, num_heads=num_heads, batch_first=True,    # allow (B, T, C)
         )
 
         self.norm2 = nn.LayerNorm(hidden_size, eps=1e-6)
@@ -244,7 +226,7 @@ class DiTBlock(nn.Module):
     def forward(self, x, c, cond_tokens):
         """
         x: (B, T_latent, D)
-        c: (B, D)               # timestep embedding
+        c: (B, D)               # timestep embedding + global cond
         cond_tokens: (B, S_cond, D)  # Hi-C encoder tokens
         """
         # slice adaLN params
@@ -270,11 +252,10 @@ class FinalLayer(nn.Module):
     """
     The final layer of DiT.
     """
-    def __init__(self, hidden_size, patch_size, out_channels):
+    def __init__(self, hidden_size, out_channels):
         super().__init__()
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        # MODIFIED: output dimension changed from patch_size * patch_size * out_channels to out_channels
-        self.linear = nn.Linear(hidden_size, out_channels, bias=True)  # MODIFIED
+        self.linear = nn.Linear(hidden_size, out_channels, bias=True)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(hidden_size, 2 * hidden_size, bias=True)
@@ -289,18 +270,17 @@ class FinalLayer(nn.Module):
 
 class DiT(nn.Module):
     """
-    Diffusion model with a Transformer backbone.
+    Diffusion model with a Transformer backbone for 1D sequences.
     """
     def __init__(
         self,
-        input_size=928,  # MODIFIED: sequence length (should match HiC W, e.g., 928)
-        patch_size=2,
+        input_size=928,        # sequence length (should match HiC W, e.g., 928)
         in_channels=4,
         hidden_size=1152,
         depth=28,
         num_heads=16,
         mlp_ratio=4.0,
-        cross_attn_interval: int = 4,   # use cross-attn every N layers
+        cross_attn_interval: int | None = 4,   # use cross-attn every N layers
         learn_sigma=True,
         gradient_checkpointing=True,   # allow gradient checkpointing to save memory
     ):
@@ -309,20 +289,19 @@ class DiT(nn.Module):
         self.learn_sigma = learn_sigma
         self.in_channels = in_channels
         self.out_channels = in_channels * 2 if learn_sigma else in_channels
-        self.patch_size = patch_size
         self.num_heads = num_heads
 
-        # MODIFIED: use Linear as 1D sequence embedder instead of 2D PatchEmbed
-        self.x_embedder = nn.Linear(in_channels, hidden_size, bias=True)  # MODIFIED
-        self.seq_len = input_size  # MODIFIED: interpret input_size as sequence length
-        num_patches = self.seq_len  # MODIFIED
+        # 1D sequence embedder
+        self.x_embedder = nn.Linear(in_channels, hidden_size, bias=True)
+        self.seq_len = input_size
+        num_patches = self.seq_len  # sequence length
 
         self.t_embedder = TimestepEmbedder(hidden_size)
-        # MODIFIED: pass input_size from DiT to HiC encoder so W is shared
-        self.hic_encoder = HiCEncoder(input_size=input_size, out_dim=hidden_size)  # MODIFIED
+        # pass input_size from DiT to HiC encoder so W is shared
+        self.hic_encoder = HiCEncoder(input_size=input_size, out_dim=hidden_size)
         assert self.hic_encoder.proj_out.out_features == hidden_size
 
-        # Will use fixed sin-cos embedding:
+        # fixed sin-cos embedding:
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
 
         self.blocks = nn.ModuleList()
@@ -332,7 +311,7 @@ class DiT(nn.Module):
                 DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio, use_cross_attn=use_cross)
             )
             
-        self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
+        self.final_layer = FinalLayer(hidden_size, self.out_channels)
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -344,16 +323,18 @@ class DiT(nn.Module):
                     nn.init.constant_(module.bias, 0)
         self.apply(_basic_init)
 
-        # MODIFIED: Initialize (and freeze) pos_embed by 1D sin-cos embedding over sequence length
-        pos = get_1d_sincos_pos_embed_from_grid(self.pos_embed.shape[-1], np.arange(self.seq_len, dtype=np.float32))  # MODIFIED
-        self.pos_embed.data.copy_(torch.from_numpy(pos).float().unsqueeze(0))  # MODIFIED
+        # Initialize (and freeze) pos_embed by 1D sin-cos embedding over sequence length
+        pos = get_1d_sincos_pos_embed_from_grid(
+            self.pos_embed.shape[-1], np.arange(self.seq_len, dtype=np.float32)
+        )
+        self.pos_embed.data.copy_(torch.from_numpy(pos).float().unsqueeze(0))
 
-        # MODIFIED: Initialize x_embedder like nn.Linear
-        w = self.x_embedder.weight.data  # MODIFIED
-        nn.init.xavier_uniform_(w)       # MODIFIED
-        nn.init.constant_(self.x_embedder.bias, 0)  # MODIFIED
+        # Initialize x_embedder like nn.Linear
+        w = self.x_embedder.weight.data
+        nn.init.xavier_uniform_(w)
+        nn.init.constant_(self.x_embedder.bias, 0)
 
-        # Initialize hic_encoder:
+        # Initialize hic_encoder null token:
         if getattr(self.hic_encoder, "use_learned_null", False):
             with torch.no_grad():
                 nn.init.normal_(self.hic_encoder.null_cond, std=0.02)
@@ -377,42 +358,40 @@ class DiT(nn.Module):
         """
         x: (N, T, C_out)
         imgs: (N, C_out, T) sequence outputs (channels-first)
-        """  # MODIFIED_COMMENT: docstring updated for sequence output
-        # MODIFIED: for sequence, simply return (N, C, T)
-        c = self.out_channels  # MODIFIED
-        imgs = x.permute(0, 2, 1)  # (N, C, T)  # MODIFIED
-        return imgs  # MODIFIED
+        """
+        imgs = x.permute(0, 2, 1)  # (N, C, T)
+        return imgs
 
     def forward(self, x, t, H):
         """
         Forward pass of DiT.
         x: (N, T, C_in) tensor of sequence inputs (e.g., per-token latent representations)
         t: (N,) tensor of diffusion timesteps
-        H: tensor hic matrices
-        """  # MODIFIED_COMMENT: updated x description to sequence format
+        H: tensor hic matrices (N, C_hic, W, W)
+        """
         cond_tokens = self.hic_encoder(H, train=self.training)
         y = cond_tokens.mean(dim=1)  
-        
-        # MODIFIED: expect x as (N, T, C) and use Linear embedder
-        x = self.x_embedder(x)  # (N, T, D)  # MODIFIED
+
+        # expect x as (N, T, C) and use Linear embedder
+        x = self.x_embedder(x)  # (N, T, D)
         x = x + self.pos_embed.to(x.dtype)  # (N, T, D)
-        t = self.t_embedder(t)                   # (N, D)
+        t = self.t_embedder(t)             # (N, D)
         c = t + y
         
         for block in self.blocks:
             if self.gradient_checkpointing:
                 x = cp.checkpoint(block, x, c, cond_tokens, use_reentrant=False)
             else:
-                x = block(x, c, cond_tokens)          # cross-attn injects condition each layer
+                x = block(x, c, cond_tokens)  # cross-attn injects condition each layer
                 
-        x = self.final_layer(x, c)                # (N, T, out_channels)  # MODIFIED
-        x = self.unpatchify(x)                   # (N, out_channels, T)   # MODIFIED
+        x = self.final_layer(x, c)         # (N, T, out_channels)
+        x = self.unpatchify(x)             # (N, out_channels, T)
         return x
 
     def forward_with_cfg(self, x, t, H, cfg_scale):
         """
         CFG forward pass of DiT inference on sequence inputs.
-        """  # MODIFIED_COMMENT: clarify it's for sequence inputs
+        """
         N = x.shape[0]
         assert N % 2 == 0
         half = N // 2
@@ -428,12 +407,12 @@ class DiT(nn.Module):
         uncond_half = self.hic_encoder.null_tokens(half, dtype=cond_half.dtype, device=cond_half.device)
 
         y_cond = cond_half.mean(dim=1)                 # (half, D)
-        y_uncond = torch.zeros_like(y_cond)
+        y_uncond = uncond_half.mean(dim=1)
         
         combined_cond = torch.cat([cond_half, uncond_half], dim=0)
 
-        # MODIFIED: expect combined_x as (N, T, C) and use Linear embedder
-        x = self.x_embedder(combined_x)  # (N, T, D)  # MODIFIED
+        # expect combined_x as (N, T, C) and use Linear embedder
+        x = self.x_embedder(combined_x)  # (N, T, D)
         x = x + self.pos_embed.to(x.dtype)
         t = self.t_embedder(combined_t)
         c = torch.cat([t[:half] + y_cond, t[half:] + y_uncond], dim=0)
@@ -441,14 +420,14 @@ class DiT(nn.Module):
         for block in self.blocks:
             x = block(x, c, combined_cond)
 
-        model_out = self.final_layer(x, c)      # (N, T, out_channels)  # MODIFIED
-        model_out = self.unpatchify(model_out)  # (N, out_channels, T)  # MODIFIED
+        model_out = self.final_layer(x, c)      # (N, T, out_channels)
+        model_out = self.unpatchify(model_out)  # (N, out_channels, T)
         
-        cond_out, uncond_out = torch.split(model_out, half, dim=0)       # (N/2, out_ch, T)  # MODIFIED
+        cond_out, uncond_out = torch.split(model_out, half, dim=0)  # (N/2, out_ch, T)
 
-        guided_half = uncond_out + cfg_scale * (cond_out - uncond_out)   # (N/2, out_ch, T)  # MODIFIED
+        guided_half = uncond_out + cfg_scale * (cond_out - uncond_out)  # (N/2, out_ch, T)
 
-        out = torch.cat([guided_half, guided_half], dim=0)               # (N, out_ch, T)    # MODIFIED
+        out = torch.cat([guided_half, guided_half], dim=0)              # (N, out_ch, T)
         return out
 
 
@@ -511,46 +490,22 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
 #                                   DiT Configs                                  #
 #################################################################################
 
-def DiT_XL_2(**kwargs):
-    return DiT(depth=28, hidden_size=1152, patch_size=2, num_heads=16, **kwargs)
+def DiT_XL(**kwargs):
+    return DiT(depth=28, hidden_size=1152, num_heads=16, **kwargs)
 
-def DiT_XL_4(**kwargs):
-    return DiT(depth=28, hidden_size=1152, patch_size=4, num_heads=16, **kwargs)
+def DiT_L(**kwargs):
+    return DiT(depth=24, hidden_size=1024, num_heads=16, **kwargs)
 
-def DiT_XL_8(**kwargs):
-    return DiT(depth=28, hidden_size=1152, patch_size=8, num_heads=16, **kwargs)
+def DiT_B(**kwargs):
+    return DiT(depth=12, hidden_size=768, num_heads=12, **kwargs)
 
-def DiT_L_2(**kwargs):
-    return DiT(depth=24, hidden_size=1024, patch_size=2, num_heads=16, **kwargs)
-
-def DiT_L_4(**kwargs):
-    return DiT(depth=24, hidden_size=1024, patch_size=4, num_heads=16, **kwargs)
-
-def DiT_L_8(**kwargs):
-    return DiT(depth=24, hidden_size=1024, patch_size=8, num_heads=16, **kwargs)
-
-def DiT_B_2(**kwargs):
-    return DiT(depth=12, hidden_size=768, patch_size=2, num_heads=12, **kwargs)
-
-def DiT_B_4(**kwargs):
-    return DiT(depth=12, hidden_size=768, patch_size=4, num_heads=12, **kwargs)
-
-def DiT_B_8(**kwargs):
-    return DiT(depth=12, hidden_size=768, patch_size=8, num_heads=12, **kwargs)
-
-def DiT_S_2(**kwargs):
-    return DiT(depth=12, hidden_size=384, patch_size=2, num_heads=6, **kwargs)
-
-def DiT_S_4(**kwargs):
-    return DiT(depth=12, hidden_size=384, patch_size=4, num_heads=6, **kwargs)
-
-def DiT_S_8(**kwargs):
-    return DiT(depth=12, hidden_size=384, patch_size=8, num_heads=6, **kwargs)
+def DiT_S(**kwargs):
+    return DiT(depth=12, hidden_size=384, num_heads=6, **kwargs)
 
 
 DiT_models = {
-    'DiT-XL/2': DiT_XL_2,  'DiT-XL/4': DiT_XL_4,  'DiT-XL/8': DiT_XL_8,
-    'DiT-L/2':  DiT_L_2,   'DiT-L/4':  DiT_L_4,   'DiT-L/8':  DiT_L_8,
-    'DiT-B/2':  DiT_B_2,   'DiT-B/4':  DiT_B_4,   'DiT-B/8':  DiT_B_8,
-    'DiT-S/2':  DiT_S_2,   'DiT-S/4':  DiT_S_4,   'DiT-S/8':  DiT_S_8,
+    'DiT-XL': DiT_XL,
+    'DiT-L':  DiT_L,
+    'DiT-B':  DiT_B,
+    'DiT-S':  DiT_S,
 }
