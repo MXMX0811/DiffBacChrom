@@ -66,8 +66,8 @@ class TimestepEmbedder(nn.Module):
 #                                   HiC Encoder                                 #
 #################################################################################
 
-class ViTBlock(nn.Module):
-    """ViT block used in HiC encoder."""
+class EncoderBlock(nn.Module):
+    """Transformer block used in HiC encoder."""
     def __init__(self, dim, num_heads, mlp_ratio=4.0, drop=0.0):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim, eps=1e-6)
@@ -82,7 +82,7 @@ class ViTBlock(nn.Module):
         x = x + self.mlp(self.norm2(x))
         return x
 
-class ViTHiCEncoder(nn.Module):
+class HiCEncoder(nn.Module):
     """
     ViT-based encoder for square Hi-C matrices.
     - input_size: W (H=W)
@@ -97,7 +97,6 @@ class ViTHiCEncoder(nn.Module):
         self,
         input_size: int = 928,
         in_channels: int = 1,
-        patch_size: int = 16,          # kept but no longer used         # MODIFIED
         embed_dim: int = 512,
         depth: int = 8,
         num_heads: int = 8,
@@ -125,7 +124,7 @@ class ViTHiCEncoder(nn.Module):
         self.pos_embed = nn.Parameter(torch.zeros(1, s_cond, embed_dim), requires_grad=False)  # MODIFIED
         
         self.blocks = nn.ModuleList([
-            ViTBlock(embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
+            EncoderBlock(embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
         ])
         self.norm = nn.LayerNorm(embed_dim, eps=1e-6)
         self.proj_out = nn.Linear(embed_dim, out_dim, bias=True)  # map to DiT hidden size
@@ -320,7 +319,7 @@ class DiT(nn.Module):
 
         self.t_embedder = TimestepEmbedder(hidden_size)
         # MODIFIED: pass input_size from DiT to HiC encoder so W is shared
-        self.hic_encoder = ViTHiCEncoder(input_size=input_size, out_dim=hidden_size)  # MODIFIED
+        self.hic_encoder = HiCEncoder(input_size=input_size, out_dim=hidden_size)  # MODIFIED
         assert self.hic_encoder.proj_out.out_features == hidden_size
 
         # Will use fixed sin-cos embedding:
