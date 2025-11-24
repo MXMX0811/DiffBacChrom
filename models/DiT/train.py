@@ -15,8 +15,7 @@ from torchvision import datasets, transforms
 from torchvision.utils import make_grid
 from tqdm import tqdm
 
-from download import find_model
-from models import DiT_models
+from model import DiT_models
 from diffusers.models import AutoencoderKL
 
 import random
