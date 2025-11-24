@@ -173,12 +173,11 @@ class StructureDecoder1D(nn.Module):
 # ==============================
 class StructureAutoencoderKL1D(nn.Module):
     """
-    面向当前设计的结构 VAE：
-      - 逐 hic bin 处理（序列长度 = W = hic_index 数）
-      - 输入:  (B, W, 8)  [x1,y1,z1,m1,x2,y2,z2,m2]
-      - latent: (B, W, z_channels)  与 HiCEncoder 的 (B, W, D) 对齐
-      - 重建: (B, W, 8)
-    内部 conv 仍然用 (B, C, T) 排布。
+      - per hic bin（seq len = W = hic_index number）
+      - Input:  (B, W, 8)  [x1,y1,z1,m1,x2,y2,z2,m2]
+      - latent: (B, W, z_channels) corresponding to HiCEncoder (B, W, D) in DiT
+      - recon: (B, W, 8)
+    Conv use (B, C, T) format
     """
     def __init__(
         self,
