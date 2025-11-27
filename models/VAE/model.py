@@ -174,14 +174,14 @@ class StructureDecoder1D(nn.Module):
 class StructureAutoencoderKL1D(nn.Module):
     """
       - per hic bin（seq len = W = hic_index number）
-      - Input:  (B, W, 8)  [x1,y1,z1,m1,x2,y2,z2,m2]
+      - Input:  (B, W, 16)  [x1,y1,z1,m1,x2,y2,z2,m2] for 2 beads in each hic bin
       - latent: (B, W, z_channels) corresponding to HiCEncoder (B, W, D) in DiT
       - recon: (B, W, 8)
     Conv use (B, C, T) format
     """
     def __init__(
         self,
-        in_channels: int = 8,
+        in_channels: int = 16,
         base_channels: int = 128,
         num_res_blocks: int = 4,
         z_channels: int = 16,
