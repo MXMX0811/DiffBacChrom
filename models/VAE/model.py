@@ -1,5 +1,6 @@
 import torch.nn as nn
 import torch.nn.functional as F
+import torch
 
 
 # ------------------------------
@@ -69,7 +70,7 @@ class StructureEncoder1D(nn.Module):
     """
     def __init__(
         self,
-        in_channels: int = 8,      # [x1,y1,z1,m1,x2,y2,z2,m2]
+        in_channels: int = 16,      # [x1,y1,z1,m1,x2,y2,z2,m2] for 2 beads in each hic bin
         hidden_channels: int = 128,
         num_res_blocks: int = 4,
         z_channels: int = 4,      # latent channel, corresponding to DiT.in_channels
@@ -126,7 +127,7 @@ class StructureDecoder1D(nn.Module):
     """
     def __init__(
         self,
-        out_channels: int = 8,     # [x1,y1,z1,m1,x2,y2,z2,m2]
+        out_channels: int = 16,     # [x1,y1,z1,m1,x2,y2,z2,m2] for 2 beads in each hic bin
         hidden_channels: int = 128,
         num_res_blocks: int = 4,
         z_channels: int = 4,
@@ -182,7 +183,7 @@ class StructureAutoencoderKL1D(nn.Module):
     def __init__(
         self,
         in_channels: int = 16,
-        base_channels: int = 128,
+        hidden_channels: int = 128,
         num_res_blocks: int = 4,
         z_channels: int = 16,
         dropout: float = 0.0,
@@ -191,14 +192,14 @@ class StructureAutoencoderKL1D(nn.Module):
         
         self.encoder = StructureEncoder1D(
             in_channels=in_channels,
-            base_channels=base_channels,
+            hidden_channels=hidden_channels,
             num_res_blocks=num_res_blocks,
             z_channels=z_channels,
             dropout=dropout,
         )
         self.decoder = StructureDecoder1D(
             out_channels=in_channels,
-            base_channels=base_channels,
+            hidden_channels=hidden_channels,
             num_res_blocks=num_res_blocks,
             z_channels=z_channels,
             dropout=dropout,
@@ -216,8 +217,14 @@ class StructureAutoencoderKL1D(nn.Module):
         """
         # to (B, C_in, W)
         x_cwt = x_seq.permute(0, 2, 1)
-        z_cwt, mu_cwt, logvar_cwt = self.encode(x_cwt)  # (B, z_channels, W)
-        # back to (B, W, C)
+        mu_cwt, logvar_cwt = self.encoder(x_cwt)  # (B, z_channels, W)
+        
+        # reparameterization trick: z = mu + eps * sigma
+        std = torch.exp(0.5 * logvar_cwt)
+        eps = torch.randn_like(std)
+        z_cwt = mu_cwt + eps * std               # (B, z_channels, W)
+
+        # 转回 (B, W, C)
         z_seq = z_cwt.permute(0, 2, 1)
         mu_seq = mu_cwt.permute(0, 2, 1)
         logvar_seq = logvar_cwt.permute(0, 2, 1)
@@ -230,7 +237,7 @@ class StructureAutoencoderKL1D(nn.Module):
           x_recon_seq: (B, W, C_in)
         """
         z_cwt = z_seq.permute(0, 2, 1)         # (B, z_channels, W)
-        x_recon_cwt = self.decode(z_cwt)       # (B, C_in, W)
+        x_recon_cwt = self.decoder(z_cwt)       # (B, C_in, W)
         x_recon_seq = x_recon_cwt.permute(0, 2, 1)
         return x_recon_seq
 
@@ -251,6 +258,4 @@ def kl_loss(mu, logvar):
     mu, logvar: (B, C, T)
     """
     kl = -0.5 * (1.0 + logvar - mu.pow(2) - logvar.exp())   # (B, C, T)
-    denom = mu.numel()
-
-    return kl.sum() / denom
+    return kl.mean()
