@@ -7,11 +7,9 @@ import wandb
 
 import sys
 sys.path.append(".")
-from models.VAE.model import StructureAutoencoderKL1D  # 修改成你的真实VAE类名
+from models.VAE.model import StructureAutoencoderKL1D
 from scripts.dataloader import HiCStructureDataset, collate_fn
 
-
-# ====================== KL LOSS（序列版：928×16 -> μ/σ） ======================
 
 def kl_loss_seq(mu, logvar):
     """
@@ -21,9 +19,6 @@ def kl_loss_seq(mu, logvar):
     kl = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())  # (B,T,D)
     return kl.mean()  # 全局平均作为 final KL loss
 
-
-# ====================== TRAIN.PY 主程序（无train_one_epoch函数） ======================
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=50)
@@ -31,7 +26,6 @@ def main():
     parser.add_argument("--batch_size", type=int, default=16)
     args = parser.parse_args()
 
-    # ====== 固定训练参数（核心你可以改）======
     ROOT_DIR = "data"
     HIC_DIRNAME = "Hi-C"
     STRUCT_DIRNAME = "structure"
@@ -48,7 +42,6 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # ====== DataLoader ======
     dataset = HiCStructureDataset(
         root_dir=ROOT_DIR,
         hic_dirname=HIC_DIRNAME,
