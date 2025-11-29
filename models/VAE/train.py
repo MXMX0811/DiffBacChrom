@@ -189,11 +189,11 @@ def main():
         avg_kl = total_kl / n
 
         print(
-            f"Epoch {epoch} DONE | "
+            f"Epoch {epoch} | "
             f"avg_loss={avg_loss:.6f}  "
             f"avg_coord={avg_coord:.6f}  "
             f"avg_mask={avg_mask:.6f}  "
-            f"avg_kl={avg_kl:.6f}\n"
+            f"avg_kl={avg_kl:.6f}"
         )
 
         wandb.log(

@@ -184,7 +184,7 @@ class StructureAutoencoderKL1D(nn.Module):
         self,
         in_channels: int = 16,
         hidden_channels: int = 128,
-        num_res_blocks: int = 4,
+        num_res_blocks: int = 18,
         z_channels: int = 16,
         dropout: float = 0.0,
     ):
