@@ -7,6 +7,10 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
 
+import sys
+sys.path.append(".")
+from scripts.preprocess import center_batch, scale_batch, random_rotate_batch
+
 
 class HiCStructureDataset(Dataset):
     def __init__(
@@ -195,7 +199,7 @@ class HiCStructureDataset(Dataset):
 
 # ---------- collate_fn & DataLoader ----------
 
-def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+def collate_fn(batch: List[Dict[str, Any]], train: bool) -> Dict[str, Any]:
     """
     仍然简单 stack；假设同一个 batch 中 W 一样大（你现在的数据应该还是同一分辨率），
     如果将来要支持变长序列，需要在这里做 padding。
@@ -207,10 +211,18 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     hic = torch.stack(hic_list, dim=0)          # (B, 1, W, W)
     structure = torch.stack(struct_list, dim=0) # (B, W, 16)
-
+    
+    # Preprocess: centering, scaling
+    structure, centroid = center_batch(structure)
+    structure, scale = scale_batch(structure)
+    if train:
+        structure = random_rotate_batch(structure)
+        
     return {
         "hic": hic,
         "structure": structure,
+        "centroid": centroid,
+        "scale": scale,
         "sample_id": sample_ids,
         "structure_file": struct_files,
     }

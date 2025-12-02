@@ -10,6 +10,8 @@ sys.path.append(".")
 from models.VAE.model import StructureAutoencoderKL1D
 from scripts.dataloader import HiCStructureDataset, collate_fn
 
+from functools import partial
+
 
 def kl_loss_seq(mu, logvar):
     """
@@ -53,7 +55,7 @@ def main():
         dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        collate_fn=collate_fn,
+        collate_fn=partial(collate_fn, train=True),
         num_workers=NUM_WORKERS,
         pin_memory=True,
     )
