@@ -3,10 +3,8 @@ import os
 from functools import partial
 from typing import Dict, List
 
-import numpy as np
 import pandas as pd
 import torch
-from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import wandb
@@ -16,7 +14,6 @@ sys.path.append(".")
 from model import DiT_models  # noqa: E402
 from models.VAE.model import StructureAutoencoderKL1D  # noqa: E402
 from scripts.dataloader import HiCStructureDataset, collate_fn  # noqa: E402
-from scripts.preprocess import COORD_IDX  # noqa: E402
 
 
 class RF:
@@ -63,35 +60,6 @@ class RF:
             vc, _ = torch.split(vc, C_half, dim=1)
             z = z - dt_tensor * vc
         return z
-
-
-def get_scheduler(opt, warmup_steps=500, total_steps=10000):
-    def lr_lambda(step):
-        if step < warmup_steps:
-            return step / warmup_steps
-        return 0.5 * (1 + np.cos(np.pi * (step - warmup_steps) / (total_steps - warmup_steps)))
-    return LambdaLR(opt, lr_lambda)
-
-
-def denormalize_structure(struct_pred: torch.Tensor, centroid: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    """
-    Undo center+scale to return to original coordinate space.
-    struct_pred: (B, W, 16) in normalized space
-    centroid: (B, 1, 3)
-    scale: (B, 1, 1)
-    """
-    device = struct_pred.device
-    coord_idx = torch.tensor(COORD_IDX, device=device)
-
-    coords = struct_pred[..., coord_idx]  # (B, W, 12)
-    B, W, _ = coords.shape
-    coords_3d = coords.view(B, W * 4, 3)
-
-    coords_denorm = coords_3d * scale.unsqueeze(-1) + centroid
-
-    out = struct_pred.clone()
-    out[..., coord_idx] = coords_denorm.view(B, W, 12)
-    return out
 
 
 def rebuild_structure_tables(
@@ -230,8 +198,6 @@ def main():
             )
             batch = next(iter(vis_loader))
             hic = batch["hic"].to(device)
-            centroid = batch["centroid"]
-            scale = batch["scale"]
             sample_ids = batch["sample_id"]
             structure_files = batch["structure_file"]
 
@@ -241,9 +207,8 @@ def main():
                 sample_steps=args.sample_steps,
                 shape=(hic.shape[0], seq_len, vae.z_channels),
             )
-            decoded = vae.decode(sample_latent / args.latent_scale)  # (B,W,16), still normalized
-            decoded_denorm = denormalize_structure(decoded, centroid.to(device), scale.to(device))
-            decoded_cpu = decoded_denorm.cpu()
+            decoded = vae.decode(sample_latent / args.latent_scale)  # (B,W,16) in normalized space
+            decoded_cpu = decoded.cpu()
 
             rebuild_structure_tables(
                 decoded_cpu,
