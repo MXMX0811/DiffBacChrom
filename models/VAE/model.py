@@ -1,17 +1,14 @@
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
+from types import SimpleNamespace
 
 
 # ------------------------------
 # GroupNorm + Conv1d block
 # ------------------------------
 class NormConv1d(nn.Module):
-    """
-    GN + SiLU + Conv1d, ConvBlock in ResNet Block.
-    Input:  (B, C_in, T)
-    Output:  (B, C_out, T)
-    """
+    """GN + SiLU + Conv1d"""
     def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, num_groups=32):
         super().__init__()
         self.norm = nn.GroupNorm(
@@ -30,28 +27,16 @@ class NormConv1d(nn.Module):
 
 
 # ------------------------------
-# 1D ResNet Block（without downsampling）
+# 1D ResNet Block
 # ------------------------------
 class ResBlock1D(nn.Module):
-    """
-    ResNet block for 1D sequences.
-    in:  (B, C_in, T)
-    out: (B, C_out, T)
-    """
+    """ResNet block for 1D sequences"""
     def __init__(self, in_channels, out_channels, dropout=0.0):
         super().__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        
         self.block1 = NormConv1d(in_channels, out_channels)
         self.block2 = NormConv1d(out_channels, out_channels)
-        
         self.dropout = nn.Dropout(dropout)
-        
-        if in_channels != out_channels:
-            self.skip = nn.Conv1d(in_channels, out_channels, kernel_size=1)
-        else:
-            self.skip = nn.Identity()
+        self.skip = nn.Conv1d(in_channels, out_channels, 1) if in_channels != out_channels else nn.Identity()
     
     def forward(self, x):
         h = self.block1(x)
@@ -59,135 +44,85 @@ class ResBlock1D(nn.Module):
         return h + self.skip(x)
 
 
-# ==============================
-# Encoder：without changing length
-# ==============================
+# ------------------------------
+# Encoder
+# ------------------------------
 class StructureEncoder1D(nn.Module):
-    """
-    VAE 1D Encoder（SD-VAE-FT-MSE style，T=W）。
-    Input:  x_seq  (B, C_in, W)
-    Output:  mu, logvar  (B, z_channels, W)
-    """
-    def __init__(
-        self,
-        in_channels: int = 16,      # [x1,y1,z1,m1,x2,y2,z2,m2] for 2 beads in each hic bin
-        hidden_channels: int = 128,
-        num_res_blocks: int = 4,
-        z_channels: int = 4,      # latent channel, corresponding to DiT.in_channels
-        dropout: float = 0.0,
-    ):
+    """1D VAE Encoder"""
+    def __init__(self, in_channels=16, hidden_channels=128, num_res_blocks=4, z_channels=4, dropout=0.0):
         super().__init__()
         
-        self.conv_in = nn.Conv1d(in_channels, hidden_channels, kernel_size=3, padding=1)
+        self.conv_in = nn.Conv1d(in_channels, hidden_channels, 3, padding=1)
         
         blocks = []
-        in_ch = hidden_channels
         for _ in range(num_res_blocks):
-            blocks.append(ResBlock1D(in_ch, hidden_channels, dropout=dropout))
-            in_ch = hidden_channels
+            blocks.append(ResBlock1D(hidden_channels, hidden_channels, dropout))
         self.res_blocks = nn.ModuleList(blocks)
         
-        self.norm_out = nn.GroupNorm(
-            num_groups=min(32, hidden_channels),
-            num_channels=hidden_channels,
-            eps=1e-6,
-            affine=True,
-        )
-        self.conv_out_mu = nn.Conv1d(hidden_channels, z_channels, kernel_size=3, padding=1)
-        self.conv_out_logvar = nn.Conv1d(hidden_channels, z_channels, kernel_size=3, padding=1)
+        self.norm_out = nn.GroupNorm(min(32, hidden_channels), hidden_channels, eps=1e-6, affine=True)
+        self.conv_out_mu = nn.Conv1d(hidden_channels, z_channels, 3, padding=1)
+        self.conv_out_logvar = nn.Conv1d(hidden_channels, z_channels, 3, padding=1)
     
     def forward(self, x):
-        """
-        x: (B, C_in, W)
-        return:
-          mu:     (B, z_channels, W)
-          logvar: (B, z_channels, W)
-        """
         h = self.conv_in(x)
-        
         for blk in self.res_blocks:
             h = blk(h)
-        
         h = self.norm_out(h)
         h = F.silu(h)
-        
-        mu = self.conv_out_mu(h)
-        logvar = self.conv_out_logvar(h)
-        return mu, logvar
+        return self.conv_out_mu(h), self.conv_out_logvar(h)
 
 
-# ==============================
-# Decoder：without changing length
-# ==============================
+# ------------------------------
+# Decoder
+# ------------------------------
 class StructureDecoder1D(nn.Module):
-    """
-    VAE 1D Decoder
-    Input:  z  (B, z_channels, W)
-    Output:  x_recon (B, C_out, W)
-    """
-    def __init__(
-        self,
-        out_channels: int = 16,     # [x1,y1,z1,m1,x2,y2,z2,m2] for 2 beads in each hic bin
-        hidden_channels: int = 128,
-        num_res_blocks: int = 4,
-        z_channels: int = 4,
-        dropout: float = 0.0,
-    ):
+    """1D VAE Decoder"""
+    def __init__(self, out_channels=16, hidden_channels=128, num_res_blocks=4, z_channels=4, dropout=0.0):
         super().__init__()
         
-        self.conv_in = nn.Conv1d(z_channels, hidden_channels, kernel_size=3, padding=1)
+        self.conv_in = nn.Conv1d(z_channels, hidden_channels, 3, padding=1)
         
         blocks = []
-        in_ch = hidden_channels
         for _ in range(num_res_blocks):
-            blocks.append(ResBlock1D(in_ch, hidden_channels, dropout=dropout))
-            in_ch = hidden_channels
+            blocks.append(ResBlock1D(hidden_channels, hidden_channels, dropout))
         self.res_blocks = nn.ModuleList(blocks)
         
-        self.norm_out = nn.GroupNorm(
-            num_groups=min(32, hidden_channels),
-            num_channels=hidden_channels,
-            eps=1e-6,
-            affine=True,
-        )
-        self.conv_out = nn.Conv1d(hidden_channels, out_channels, kernel_size=3, padding=1)
+        self.norm_out = nn.GroupNorm(min(32, hidden_channels), hidden_channels, eps=1e-6, affine=True)
+        self.conv_out = nn.Conv1d(hidden_channels, out_channels, 3, padding=1)
     
     def forward(self, z):
-        """
-        z: (B, z_channels, W)
-        return:
-          x_recon: (B, C_out, W)
-        """
         h = self.conv_in(z)
-        
         for blk in self.res_blocks:
             h = blk(h)
-        
         h = self.norm_out(h)
         h = F.silu(h)
-        x_recon = self.conv_out(h)
-        return x_recon
+        return self.conv_out(h)
 
 
-# ==============================
+# ------------------------------
+# Diagonal Gaussian for 1D latents
+# ------------------------------
+class DiagonalGaussian1D:
+    """Diagonal Gaussian distribution for (B, W, C)"""
+    def __init__(self, mu, logvar):
+        self.mu = mu
+        self.logvar = logvar
+
+    def sample(self):
+        std = torch.exp(0.5 * self.logvar)
+        eps = torch.randn_like(std)
+        return self.mu + eps * std
+
+    def mode(self):
+        return self.mu
+
+
+# ------------------------------
 # AutoencoderKL1D
-# ==============================
+# ------------------------------
 class StructureAutoencoderKL1D(nn.Module):
-    """
-      - per hic bin（seq len = W = hic_index number）
-      - Input:  (B, W, 16)  [x1,y1,z1,m1,x2,y2,z2,m2] for 2 beads in each hic bin
-      - latent: (B, W, z_channels) corresponding to HiCEncoder (B, W, D) in DiT
-      - recon: (B, W, 8)
-    Conv use (B, C, T) format
-    """
-    def __init__(
-        self,
-        in_channels: int = 16,
-        hidden_channels: int = 128,
-        num_res_blocks: int = 18,
-        z_channels: int = 16,
-        dropout: float = 0.0,
-    ):
+    """1D Autoencoder KL"""
+    def __init__(self, in_channels=16, hidden_channels=128, num_res_blocks=18, z_channels=16, dropout=0.0):
         super().__init__()
         
         self.encoder = StructureEncoder1D(
@@ -208,54 +143,31 @@ class StructureAutoencoderKL1D(nn.Module):
         self.in_channels = in_channels
 
     def encode(self, x_seq):
-        """
-        x_seq: (B, W, C_in)   # C_in=8: [x1,y1,z1,m1,x2,y2,z2,m2]
-        return:
-          z_seq:   (B, W, z_channels)   # for DiT
-          mu_seq:  (B, W, z_channels)
-          logvar_seq: (B, W, z_channels)
-        """
-        # to (B, C_in, W)
-        x_cwt = x_seq.permute(0, 2, 1)
-        mu_cwt, logvar_cwt = self.encoder(x_cwt)  # (B, z_channels, W)
-        
-        # reparameterization trick: z = mu + eps * sigma
-        std = torch.exp(0.5 * logvar_cwt)
-        eps = torch.randn_like(std)
-        z_cwt = mu_cwt + eps * std               # (B, z_channels, W)
+        """Input: (B, W, C) -> return latent_dist, mu, logvar (all seq-last)"""
+        x_cwt = x_seq.permute(0, 2, 1)           # (B, C, W)
+        mu_cwt, logvar_cwt = self.encoder(x_cwt) # (B, zc, W)
 
-        # 转回 (B, W, C)
-        z_seq = z_cwt.permute(0, 2, 1)
-        mu_seq = mu_cwt.permute(0, 2, 1)
-        logvar_seq = logvar_cwt.permute(0, 2, 1)
-        return z_seq, mu_seq, logvar_seq
+        mu = mu_cwt.permute(0, 2, 1)             # (B, W, zc)
+        logvar = logvar_cwt.permute(0, 2, 1)
+        dist = DiagonalGaussian1D(mu, logvar)
+
+        return SimpleNamespace(latent_dist=dist, mu=mu, logvar=logvar)
 
     def decode(self, z_seq):
-        """
-        z_seq: (B, W, z_channels)
-        return:
-          x_recon_seq: (B, W, C_in)
-        """
-        z_cwt = z_seq.permute(0, 2, 1)         # (B, z_channels, W)
-        x_recon_cwt = self.decoder(z_cwt)       # (B, C_in, W)
-        x_recon_seq = x_recon_cwt.permute(0, 2, 1)
-        return x_recon_seq
+        """Input: (B, W, C) -> (B, W, C)"""
+        z_cwt = z_seq.permute(0, 2, 1)           # (B, C, W)
+        x_cwt = self.decoder(z_cwt)
+        return x_cwt.permute(0, 2, 1)
 
-    def forward(self, x_seq):
-        """
-        x_seq: (B, W, C_in)
-        return:
-          x_recon_seq: (B, W, C_in)
-          mu_seq, logvar_seq: (B, W, z_channels)
-        """
-        z_seq, mu_seq, logvar_seq = self.encode(x_seq)
-        x_recon_seq = self.decode(z_seq)
-        return x_recon_seq, mu_seq, logvar_seq
+    def forward(self, x_seq, scale_latent=1.0, sample_posterior=True):
+        enc = self.encode(x_seq)
+        z = enc.latent_dist.sample() if sample_posterior else enc.latent_dist.mode()
+        z = z * scale_latent
+        x_recon = self.decode(z)
+        return x_recon, enc.mu, enc.logvar
 
 
 def kl_loss(mu, logvar):
-    """
-    mu, logvar: (B, C, T)
-    """
-    kl = -0.5 * (1.0 + logvar - mu.pow(2) - logvar.exp())   # (B, C, T)
+    """KL divergence term"""
+    kl = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
     return kl.mean()
