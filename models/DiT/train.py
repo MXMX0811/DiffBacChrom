@@ -1,153 +1,69 @@
-# The code is implemented based on https://github.com/cloneofsimo/minRF
-import pickle
+import argparse
 import os
-import torch
-import torchvision.transforms as transforms
+from functools import partial
+from typing import Dict, List
+
 import numpy as np
-import torch.optim as optim
-import matplotlib.pyplot as plt
-from torch.utils.data import Dataset, DataLoader
-from thop import profile
-from thop import clever_format
-from PIL import Image
+import pandas as pd
+import torch
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
-from torchvision.utils import make_grid
 from tqdm import tqdm
-
-from model import DiT_models
-from diffusers.models import AutoencoderKL
-
-import random
 import wandb
+
+import sys
+sys.path.append(".")
+from model import DiT_models  # noqa: E402
+from models.VAE.model import StructureAutoencoderKL1D  # noqa: E402
+from scripts.dataloader import HiCStructureDataset, collate_fn  # noqa: E402
+from scripts.preprocess import COORD_IDX  # noqa: E402
 
 
 class RF:
-    def __init__(self, model, ln=True):
+    def __init__(self, model):
         self.model = model
-        self.ln = ln
 
-    def forward(self, image, heightmap):
-        x = heightmap
-        b = x.size(0)
-        if self.ln:
-            nt = torch.randn((b,)).to(x.device)
-            t = torch.sigmoid(nt)
-        else:
-            t = torch.rand((b,)).to(x.device)
-        texp = t.view([b, *([1] * len(x.shape[1:]))])
-        # z1 = torch.randn_like(x)
-        z1 = image
-        zt = (1 - texp) * x + texp * z1
-        
-        # flops, params = profile(self.model, inputs=(zt, t))
-        # flops, params = clever_format([flops, params], "%.3f")
-        # print("FLOPs: ", flops, ", parameters: ", params)
-        
-        vtheta = self.model(zt, t)
-        
-        B, C = x.shape[:2]
-        assert vtheta.shape == (B, C * 2, *x.shape[2:])
-        vtheta, model_var_values = torch.split(vtheta, C, dim=1)
-        # Learn the variance using the variational bound, but don't let
-        # it affect our mean prediction.
+    def forward(self, data_latent: torch.Tensor, hic: torch.Tensor):
+        """
+        data_latent: (B, W, C)
+        hic: (B, 1, W, W)
+        """
+        b = data_latent.size(0)
+        t = torch.rand((b,), device=data_latent.device)
+        texp = t.view([b, *([1] * (data_latent.dim() - 1))])
 
-        batchwise_mse = ((z1 - x - vtheta) ** 2).mean(dim=list(range(1, len(x.shape))))
-        tlist = batchwise_mse.detach().cpu().reshape(-1).tolist()
-        ttloss = [(tv, tloss) for tv, tloss in zip(t, tlist)]
-        return batchwise_mse.mean(), ttloss
+        noise = torch.randn_like(data_latent)
+        zt = (1 - texp) * data_latent + texp * noise
+
+        vtheta = self.model(zt, t, hic)
+        B, C, T = vtheta.shape
+        assert C % 2 == 0
+        C_half = C // 2
+        vtheta, _ = torch.split(vtheta, C_half, dim=1)
+
+        batchwise_mse = ((noise - data_latent - vtheta) ** 2).mean(dim=list(range(1, len(data_latent.shape))))
+        return batchwise_mse.mean()
 
     @torch.no_grad()
-    def sample(self, z, sample_steps=50):
+    def sample(self, hic: torch.Tensor, sample_steps: int, shape: torch.Size):
+        """
+        hic: (B, 1, W, W)
+        shape: (B, W, C)
+        """
+        z = torch.randn(shape, device=hic.device)
         b = z.size(0)
         dt = 1.0 / sample_steps
-        dt = torch.tensor([dt] * b).to(z.device).view([b, *([1] * len(z.shape[1:]))])
-        images = [z]
+        dt_tensor = torch.tensor([dt] * b, device=hic.device).view([b, *([1] * (z.dim() - 1))])
+
         for i in range(sample_steps, 0, -1):
-            t = i / sample_steps
-            t = torch.tensor([t] * b).to(z.device)
-
-            vc = self.model.encode(z, t)
-            
-            B, C = z.shape[:2]
-            assert vc.shape == (B, C * 2, *z.shape[2:])
-            vc, model_var_values = torch.split(vc, C, dim=1)
-
-            z = z - dt * vc
-            images.append(z)
-        # return images
+            t = torch.full((b,), i / sample_steps, device=hic.device)
+            vc = self.model(z, t, hic)
+            B, C, T = vc.shape
+            C_half = C // 2
+            vc, _ = torch.split(vc, C_half, dim=1)
+            z = z - dt_tensor * vc
         return z
-    
-    
-def get_texture_folders(root_dir):
-    return [os.path.join(root_dir, texture) for texture in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, texture))]
 
-
-class PairedRandomFlip:
-    def __init__(self, p=0.5):
-        self.p = p
-
-    def __call__(self, image, target):
-        if random.random() < self.p:
-            image = transforms.functional.hflip(image)
-            target = transforms.functional.hflip(target)
-        if random.random() < self.p:
-            image = transforms.functional.vflip(image)
-            target = transforms.functional.vflip(target)
-        return image, target
-
-
-class TextureDataset(Dataset):
-    def __init__(self, root_dir, transform=None, paired_transform=None):
-        self.root_dir = root_dir
-        self.transform = transform
-        self.paired_transform = paired_transform
-        self.file_pairs = self._load_file_pairs()
-    
-    def _load_file_pairs(self):
-        file_pairs = []
-        texture_folders = get_texture_folders(self.root_dir)
-        
-        for texture_folder in texture_folders:
-            texture_name = texture_folder.split("\\")[1]
-            
-            files = os.listdir(texture_folder)
-            base_names = set(f.split(".")[0] for f in files)
-            
-            for base in base_names:
-                image_path = os.path.join(texture_folder, f"{base}.jpg")
-                heightmap_path = os.path.join(texture_folder, f"{base}.pkl")
-                
-                if os.path.exists(image_path) and os.path.exists(heightmap_path):
-                    file_pairs.append((image_path, heightmap_path))
-        
-        return file_pairs
-    
-    def __len__(self):
-        return len(self.file_pairs)
-    
-    def __getitem__(self, idx):
-        image_path, heightmap_path = self.file_pairs[idx]
-        image = Image.open(image_path).convert("RGB")
-        with open(heightmap_path, 'rb') as f:
-            heightmap = pickle.load(f).astype(np.float32)
-        
-        if self.transform:
-            image = self.transform(image)
-            heightmap = self.transform(heightmap)
-            
-            h_max = heightmap.max()
-            h_min = heightmap.min()
-            heightmap = (255 * (heightmap - h_min) / (h_max - h_min)).clamp(0, 255).byte()
-            heightmap = heightmap / 255
-        
-        if self.paired_transform:
-            image, heightmap = self.paired_transform(image, heightmap)
-        
-        return image, heightmap
-    
-
-from torch.optim.lr_scheduler import LambdaLR
 
 def get_scheduler(opt, warmup_steps=500, total_steps=10000):
     def lr_lambda(step):
@@ -157,99 +73,193 @@ def get_scheduler(opt, warmup_steps=500, total_steps=10000):
     return LambdaLR(opt, lr_lambda)
 
 
-if __name__ == "__main__":
-    channels = 4
-    
-    latent_size = (30, 40)
-    model = DiT_models["DiT-XL/2"](
-        input_size=latent_size,
+def denormalize_structure(struct_pred: torch.Tensor, centroid: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+    """
+    Undo center+scale to return to original coordinate space.
+    struct_pred: (B, W, 16) in normalized space
+    centroid: (B, 1, 3)
+    scale: (B, 1, 1)
+    """
+    device = struct_pred.device
+    coord_idx = torch.tensor(COORD_IDX, device=device)
+
+    coords = struct_pred[..., coord_idx]  # (B, W, 12)
+    B, W, _ = coords.shape
+    coords_3d = coords.view(B, W * 4, 3)
+
+    coords_denorm = coords_3d * scale.unsqueeze(-1) + centroid
+
+    out = struct_pred.clone()
+    out[..., coord_idx] = coords_denorm.view(B, W, 12)
+    return out
+
+
+def rebuild_structure_tables(
+    struct_denorm: torch.Tensor,
+    sample_ids: List[str],
+    structure_files: List[str],
+    struct_lookup: Dict[str, str],
+    output_dir: str,
+):
+    """
+    Rebuild TSVs matching the original format: for each hic_index two rows (bead1, bead2).
+    struct_denorm: (B, W, 16) on CPU
+    struct_lookup: basename(struct_path) -> full struct_path (for column names and bead indices)
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    coord_split = [
+        ["x1", "y1", "z1", "mask1", "x2", "y2", "z2", "mask2"],
+        ["x1", "y1", "z1", "mask1", "x2", "y2", "z2", "mask2"],
+    ]
+
+    for b_idx, (sid, sfile) in enumerate(zip(sample_ids, structure_files)):
+        struct_path = struct_lookup.get(sfile)
+        if struct_path is None:
+            print(f"[Warn] structure file not found in lookup: {sfile}, skip saving.")
+            continue
+
+        template_df = pd.read_csv(struct_path, sep="\t")
+        pred = struct_denorm[b_idx].cpu().numpy()  # (W,16)
+
+        # iterate hic_index groups in original order
+        grouped = template_df.groupby("hic_index", sort=False)
+        token_idx = 0
+        for hic_idx, grp in grouped:
+            if len(grp) != 2:
+                raise ValueError(f"Expected 2 rows per hic_index in {sfile}, got {len(grp)} at {hic_idx}")
+            token = pred[token_idx]
+            token_idx += 1
+
+            row1_vals = token[:8]
+            row2_vals = token[8:]
+
+            row_indices = grp.index.tolist()
+            template_df.loc[row_indices[0], coord_split[0]] = row1_vals
+            template_df.loc[row_indices[1], coord_split[1]] = row2_vals
+
+        out_path = os.path.join(output_dir, f"{sid}_recon.tsv")
+        template_df.to_csv(out_path, sep="\t", index=False)
+        print(f"Saved reconstruction to {out_path}")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root_dir", type=str, default="data/train")
+    parser.add_argument("--hic_dirname", type=str, default="Hi-C")
+    parser.add_argument("--struct_dirname", type=str, default="structure")
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--latent_scale", type=float, default=0.18215)
+    parser.add_argument("--sample_steps", type=int, default=50)
+    parser.add_argument("--save_dir", type=str, default="checkpoints/dit")
+    parser.add_argument("--vae_ckpt", type=str, default="checkpoints/vae/epoch_050.pt")
+    parser.add_argument("--run_name", type=str, default="rf_dit_structure")
+    args = parser.parse_args()
+
+    os.makedirs(args.save_dir, exist_ok=True)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    dataset = HiCStructureDataset(
+        root_dir=args.root_dir,
+        hic_dirname=args.hic_dirname,
+        struct_dirname=args.struct_dirname,
+        expected_size=928,
     )
-    
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Grayscale(num_output_channels=1)
-    ])
-    paired_transform = PairedRandomFlip(p=0.5)
-    root_dir = "../../Texture"
-    dataset = TextureDataset(root_dir, transform=transform, paired_transform=paired_transform)
-    dataloader = DataLoader(dataset, batch_size=8, shuffle=True, num_workers=4)
-    
-    # ckpt_path = f"DiT-XL-2-256x256.pt"
-    # state_dict = find_model(ckpt_path)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+        collate_fn=partial(collate_fn, train=True),
+    )
 
-    # delete positional embedding
-    # pre-trained positional embedding is 16x16 grid
-    # new positional embedding is 15x20 (240x320 -> VAE -> 30x40 -> pachify 2 -> 15x20)
-    # state_dict = {k: v for k, v in state_dict.items() if 'pos_embed' not in k}
+    # lookup for structure file paths so we can restore column names
+    struct_lookup = {os.path.basename(s_path): s_path for _, s_path in dataset.samples}
 
-    # missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
-    # print('Missing keys:', missing_keys)
-    # print('Unexpected keys:', unexpected_keys)
-    model = model.cuda()
-    
-    vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-ema").cuda()
-    vae_mse = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-mse").cuda()
+    vae = StructureAutoencoderKL1D().to(device)
+    ckpt = torch.load(args.vae_ckpt, map_location="cpu")
+    vae.load_state_dict(ckpt["model"])
+    vae.eval()
+    for p in vae.parameters():
+        p.requires_grad_(False)
 
-    model_size = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Number of parameters: {model_size}, {model_size / 1e6}M")
+    model = DiT_models["DiT-L"](input_size=dataset.expected_size, in_channels=vae.z_channels).to(device)
 
-    num_epochs = 100
-    
-    # Fine-tuning setup
     rf = RF(model)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5, weight_decay=0) 
-    scheduler = get_scheduler(optimizer, warmup_steps=500, total_steps=num_epochs * len(dataloader))
-    criterion = torch.nn.MSELoss()
-    
-    wandb.init(project=f"rfDiT_texture")
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0)
 
-    for epoch in range(num_epochs):
+    wandb.init(project="rf_dit_structure", name=args.run_name)
+
+    for epoch in range(args.epochs):
         rf.model.train()
-        epoch_loss = 0
-        for i, (image, heightmap) in tqdm(enumerate(dataloader)):
-            image, heightmap = image.cuda(), heightmap.cuda()
-            image = vae.encode(image.repeat(1, 3, 1, 1)).latent_dist.sample().mul_(0.18215)
-            heightmap = vae.encode(heightmap.repeat(1, 3, 1, 1)).latent_dist.sample().mul_(0.18215)
+        epoch_loss = 0.0
+
+        for batch in tqdm(dataloader, desc=f"Epoch {epoch+1}/{args.epochs}"):
+            hic = batch["hic"].to(device)  # (B,1,W,W)
+            structure = batch["structure"].to(device)  # (B,W,16)
+
+            with torch.no_grad():
+                z = vae.encode(structure).latent_dist.sample().mul_(args.latent_scale)  # (B,W,C)
+
             optimizer.zero_grad()
-            loss, blsct = rf.forward(image, heightmap)
+            loss = rf.forward(z, hic)
             loss.backward()
-            optimizer.step()
-            scheduler.step()
             torch.nn.utils.clip_grad_norm_(rf.model.parameters(), max_norm=1.0)
-            
+            optimizer.step()
+
             epoch_loss += loss.item()
-            wandb.log({"loss": loss.item()})
-        
-        print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {epoch_loss/len(dataloader):.4f}")
+            wandb.log({"train/loss": loss.item()})
 
-        wandb.log({f"Epoch Loss": epoch_loss/len(dataloader)})
+        avg_loss = epoch_loss / len(dataloader)
+        print(f"Epoch [{epoch+1}/{args.epochs}] Loss: {avg_loss:.6f}")
+        wandb.log({"epoch_loss": avg_loss, "epoch": epoch + 1})
 
+        # ---------- inference sample ----------
         rf.model.eval()
         with torch.no_grad():
-            num_samples = 10
-            
-            visualzation_loader = DataLoader(dataset, batch_size=num_samples, shuffle=True)
-            (image, heightmap) = next(iter(visualzation_loader))
-            image, heightmap = image.cuda(), heightmap.cuda()
-            z = vae.encode(image.repeat(1, 3, 1, 1)).latent_dist.sample().mul_(0.18215)
+            vis_loader = DataLoader(
+                dataset,
+                batch_size=min(2, args.batch_size),
+                shuffle=True,
+                num_workers=0,
+                collate_fn=partial(collate_fn, train=False),
+            )
+            batch = next(iter(vis_loader))
+            hic = batch["hic"].to(device)
+            centroid = batch["centroid"]
+            scale = batch["scale"]
+            sample_ids = batch["sample_id"]
+            structure_files = batch["structure_file"]
 
-            samples = rf.sample(z, sample_steps=10)
-            samples = vae_mse.decode(samples / 0.18215).sample
-            samples = 0.299 * samples[:, 0:1, :, :] + 0.587 * samples[:, 1:2, :, :] + 0.114 * samples[:, 2:3, :, :]
+            seq_len = hic.shape[-1]
+            sample_latent = rf.sample(
+                hic,
+                sample_steps=args.sample_steps,
+                shape=(hic.shape[0], seq_len, vae.z_channels),
+            )
+            decoded = vae.decode(sample_latent / args.latent_scale)  # (B,W,16), still normalized
+            decoded_denorm = denormalize_structure(decoded, centroid.to(device), scale.to(device))
+            decoded_cpu = decoded_denorm.cpu()
 
-            fig, axes = plt.subplots(3, num_samples, figsize=(num_samples * 2, 6))
-            for i in range(num_samples):
-                axes[0][i].imshow(image[i].permute(1, 2, 0).cpu().numpy(), cmap="gray")
-                axes[0][i].axis("off")
-                axes[1][i].imshow(samples[i].permute(1, 2, 0).cpu().numpy(), cmap="gray")
-                axes[1][i].axis("off")
-                axes[2][i].imshow(heightmap[i].permute(1, 2, 0).cpu().numpy(), cmap="gray")
-                axes[2][i].axis("off")
+            rebuild_structure_tables(
+                decoded_cpu,
+                sample_ids,
+                structure_files,
+                struct_lookup,
+                output_dir=os.path.join(args.save_dir, f"samples_epoch{epoch+1:03d}"),
+            )
 
-            fig.tight_layout()
-            plt.subplots_adjust(wspace = 0, hspace = 0)
-            plt.suptitle("Height maps generated by Rectified Flow")
-            plt.savefig(f"contents/sample_epoch{epoch}.png")
-            
-    torch.save(rf.model.state_dict(), 'DiT_XL_2.ckpt')
-            
+        ckpt_path = os.path.join(args.save_dir, f"epoch_{epoch+1:03d}.pt")
+        torch.save({"epoch": epoch + 1, "model": rf.model.state_dict(), "optimizer": optimizer.state_dict()}, ckpt_path)
+        wandb.save(ckpt_path)
+
+    torch.save(rf.model.state_dict(), os.path.join(args.save_dir, "final.ckpt"))
+    wandb.finish()
+
+
+if __name__ == "__main__":
+    main()

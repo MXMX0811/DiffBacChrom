@@ -28,7 +28,7 @@ def main():
     parser.add_argument("--batch_size", type=int, default=50)
     args = parser.parse_args()
 
-    ROOT_DIR = "data"
+    ROOT_DIR = "data/train"
     HIC_DIRNAME = "Hi-C"
     STRUCT_DIRNAME = "structure"
     SEQ_LEN = 928              # hic_index bins
@@ -84,6 +84,10 @@ def main():
     # ========================== TRAIN LOOP ==========================
 
     global_step = 0
+    
+    # 用于估计整个数据集上的 latent 标准差（类似 SD 的 0.18215）  # ADDED
+    latent_sq_sum = 0.0   # 累积 mu^2
+    latent_count = 0      # 累积元素个数
 
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -155,6 +159,13 @@ def main():
 
             loss.backward()
             optimizer.step()
+            
+            # ======== 统计 latent 标准差所需信息（用 mu 作为代表） ========  # ADDED
+            # 这里我们使用 posterior mean mu 来估计数据集中 latent 的整体尺度，
+            # 对所有 batch、所有位置、所有通道做全局二阶矩统计。
+            with torch.no_grad():
+                latent_sq_sum += (mu ** 2).sum().item()
+                latent_count += mu.numel()
 
             # ===== accumulate =====
             total_loss += loss.item()
@@ -217,6 +228,30 @@ def main():
             )
             wandb.save(ckpt_path)
             print(f"Checkpoint saved → {ckpt_path}")
+            
+    # ========= 训练结束后，根据累积的 mu^2 估计 latent 的整体尺度 =========  # ADDED
+    if latent_count > 0:
+        latent_var = latent_sq_sum / latent_count
+        latent_std = latent_var ** 0.5
+        # 推荐缩放系数：和 SD 一样，通常把 latent 乘一个常数，使整体 std ≈ 1
+        # 这里建议： z_scaled = z * (1.0 / latent_std)
+        suggested_scale = 1.0 / latent_std
+
+        print("\n=== Estimated latent stats over training ===")
+        print(f"latent_std ≈ {latent_std:.6f}")
+        print(f"Suggested DiT scaling factor (like 0.18215 in SD): {suggested_scale:.6f}")
+
+        # 也记录到 wandb 的 summary，方便之后查
+        wandb.summary["latent_std"] = latent_std
+        wandb.summary["latent_scale_for_DiT"] = suggested_scale
+
+        # 也可以顺手写到一个 txt 文件里
+        os.makedirs(SAVE_DIR, exist_ok=True)
+        scale_path = os.path.join(SAVE_DIR, "latent_scale.txt")
+        with open(scale_path, "w") as f:
+            f.write(f"latent_std {latent_std:.8f}\n")
+            f.write(f"latent_scale_for_DiT {suggested_scale:.8f}\n")
+        print(f"Latent scale info saved → {scale_path}")
 
     wandb.finish()
     print("\n=== TRAINING COMPLETED ===\n")
