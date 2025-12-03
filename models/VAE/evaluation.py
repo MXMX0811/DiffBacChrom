@@ -62,13 +62,13 @@ def extract_chain_coords(struct_tensor: torch.Tensor, chain: str) -> Tuple[List[
     """
     coords_x, coords_y, coords_z = [], [], []
     if chain == "orig":
-        idx_groups = [(0, 1, 2, 3), (8, 9, 10, 11)]
+        starts = [0, 8]
     else:  # "copy"
-        idx_groups = [(4, 5, 6, 7), (12, 13, 14, 15)]
+        starts = [4, 12]
 
     for token in struct_tensor:
-        for start in idx_groups:
-            x, y, z, m = token[start], token[start + 1], token[start + 2], token[start + 3]
+        for start in starts:
+            x, y, z, m = token[start:start + 4]
             if m > 0.5:
                 coords_x.append(float(x))
                 coords_y.append(float(y))
@@ -96,14 +96,29 @@ def plot_samples(originals: torch.Tensor, reconstructions: torch.Tensor, names: 
     num_show = min(5, originals.size(0))
     steel_blue = "#4682B4"
     pink_light = "#FFB6C1"
+    orig_label = "Original"
+    recon_label = "Reconstruction"
 
     # slightly shorter height; higher-res via scale factor on screenshot
     plotter = pv.Plotter(shape=(2, num_show), window_size=(num_show * 450, 650), off_screen=True)
+    subplot_w = plotter.window_size[0] / num_show
+    subplot_h = plotter.window_size[1] / 2
 
     for i in range(num_show):
         # original (row 0)
         plotter.subplot(0, i)
-        plotter.add_title(f"{names[i]} original", font_size=20)
+        # column title centered above subplot, larger font, moved upward
+        title_x = i * subplot_w + subplot_w * 0.5
+        title_y = plotter.window_size[1] - 20
+        plotter.add_text(f"{names[i]}", position=(title_x, title_y), font_size=40, color="black")
+        if i == 0:
+            # left-side vertical row label, kept inside frame
+            y_pos = subplot_h * 0.5
+            actor = plotter.add_text(orig_label, position=(15, y_pos), font_size=18, color="black")
+            try:
+                actor.GetTextProperty().SetOrientation(90)
+            except Exception:
+                pass
         pts_accum = []
         for chain, color in [("orig", steel_blue), ("copy", pink_light)]:
             x, y, z = extract_chain_coords(originals[i], chain)
@@ -114,10 +129,17 @@ def plot_samples(originals: torch.Tensor, reconstructions: torch.Tensor, names: 
             plotter.add_points(pts, color=color, point_size=20, render_points_as_spheres=True)
         if pts_accum:
             set_camera_for_points(plotter, np.concatenate(pts_accum, axis=0), shrink=0.9)
+        plotter.remove_bounds_axes()
 
         # reconstruction (row 1)
         plotter.subplot(1, i)
-        plotter.add_title(f"{names[i]} recon", font_size=20)
+        if i == 0:
+            y_pos = subplot_h * 1.5
+            actor = plotter.add_text(recon_label, position=(15, y_pos), font_size=18, color="black")
+            try:
+                actor.GetTextProperty().SetOrientation(90)
+            except Exception:
+                pass
         pts_accum = []
         for chain, color in [("orig", steel_blue), ("copy", pink_light)]:
             x, y, z = extract_chain_coords(reconstructions[i], chain)
@@ -128,6 +150,7 @@ def plot_samples(originals: torch.Tensor, reconstructions: torch.Tensor, names: 
             plotter.add_points(pts, color=color, point_size=20, render_points_as_spheres=True)
         if pts_accum:
             set_camera_for_points(plotter, np.concatenate(pts_accum, axis=0), shrink=0.9)
+        plotter.remove_bounds_axes()
 
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plotter.screenshot(save_path, scale=3.0)  # scale up for ~300 dpi output
