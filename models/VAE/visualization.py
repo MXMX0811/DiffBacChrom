@@ -58,11 +58,17 @@ def collect_chain_points(struct_tensor: torch.Tensor, chain: str, step: int | No
 
 
 def add_polyline(pl: pv.Plotter, points: np.ndarray, color: str, width: float = 2.0):
+    """
+    Draw a tubular curve through the given points (no spline interpolation).
+    - points: (N,3) array
+    - width: roughly controls tube diameter (radius ~ width*0.1)
+    """
     if points.shape[0] < 2:
         return
     cells = np.hstack(([points.shape[0]], np.arange(points.shape[0], dtype=np.int32))).astype(np.int32)
     poly = pv.PolyData(points, lines=cells)
-    pl.add_mesh(poly, color=color, line_width=width)
+    tube = poly.tube(radius=width * 0.1, n_sides=24)
+    pl.add_mesh(tube, color=color, smooth_shading=True)
 
 
 def plot_samples(
@@ -139,62 +145,30 @@ def plot_samples(
             set_camera_for_points(plotter, np.concatenate(pts_accum, axis=0), shrink=0.9)
         plotter.remove_bounds_axes()
 
-        # row 2: original subsampled every 50, with connecting lines
+        # row 2: original full lines (no points)
         plotter.subplot(2, i)
-        orig_pts, orig_idx = collect_chain_points(originals[i], "orig", step=50)
-        copy_pts, copy_idx = collect_chain_points(originals[i], "copy", step=50)
         all_pts = []
-        if orig_pts:
-            orig_arr = np.array(orig_pts)
-            plotter.add_points(orig_arr, color=steel_blue, point_size=30, render_points_as_spheres=True)
-            add_polyline(plotter, orig_arr, color=line_color, width=4.0)
-            all_pts.append(orig_arr)
-        if copy_pts:
-            copy_arr = np.array(copy_pts)
-            plotter.add_points(copy_arr, color=pink_light, point_size=30, render_points_as_spheres=True)
-            add_polyline(plotter, copy_arr, color=line_color, width=4.0)
-            all_pts.append(copy_arr)
-            if orig_pts:
-                head_idx = copy_idx[0]
-                tail_idx = copy_idx[-1]
-                prev_orig = max((o for o in orig_idx if o < head_idx), default=None)
-                next_orig = min((o for o in orig_idx if o > tail_idx), default=None)
-                if prev_orig is not None:
-                    src = orig_pts[orig_idx.index(prev_orig)]
-                    plotter.add_lines(np.array([src, copy_pts[0]]), color=line_color, width=4.0)
-                if next_orig is not None:
-                    dst = orig_pts[orig_idx.index(next_orig)]
-                    plotter.add_lines(np.array([copy_pts[-1], dst]), color=line_color, width=4.0)
+        for chain, color in [("orig", steel_blue), ("copy", pink_light)]:
+            x, y, z = extract_chain_coords(originals[i], chain)
+            if len(x) == 0:
+                continue
+            pts = np.column_stack((x, y, z))
+            all_pts.append(pts)
+            add_polyline(plotter, pts, color=color, width=0.3)
         if all_pts:
             set_camera_for_points(plotter, np.concatenate(all_pts, axis=0), shrink=0.9)
         plotter.remove_bounds_axes()
 
-        # row 3: reconstruction subsampled every 50, with connecting lines
+        # row 3: reconstruction full lines (no points)
         plotter.subplot(3, i)
-        orig_pts, orig_idx = collect_chain_points(reconstructions[i], "orig", step=50)
-        copy_pts, copy_idx = collect_chain_points(reconstructions[i], "copy", step=50)
         all_pts = []
-        if orig_pts:
-            orig_arr = np.array(orig_pts)
-            plotter.add_points(orig_arr, color=steel_blue, point_size=30, render_points_as_spheres=True)
-            add_polyline(plotter, orig_arr, color=line_color, width=4.0)
-            all_pts.append(orig_arr)
-        if copy_pts:
-            copy_arr = np.array(copy_pts)
-            plotter.add_points(copy_arr, color=pink_light, point_size=30, render_points_as_spheres=True)
-            add_polyline(plotter, copy_arr, color=line_color, width=4.0)
-            all_pts.append(copy_arr)
-            if orig_pts:
-                head_idx = copy_idx[0]
-                tail_idx = copy_idx[-1]
-                prev_orig = max((o for o in orig_idx if o < head_idx), default=None)
-                next_orig = min((o for o in orig_idx if o > tail_idx), default=None)
-                if prev_orig is not None:
-                    src = orig_pts[orig_idx.index(prev_orig)]
-                    plotter.add_lines(np.array([src, copy_pts[0]]), color=line_color, width=4.0)
-                if next_orig is not None:
-                    dst = orig_pts[orig_idx.index(next_orig)]
-                    plotter.add_lines(np.array([copy_pts[-1], dst]), color=line_color, width=4.0)
+        for chain, color in [("orig", steel_blue), ("copy", pink_light)]:
+            x, y, z = extract_chain_coords(reconstructions[i], chain)
+            if len(x) == 0:
+                continue
+            pts = np.column_stack((x, y, z))
+            all_pts.append(pts)
+            add_polyline(plotter, pts, color=color, width=0.3)
         if all_pts:
             set_camera_for_points(plotter, np.concatenate(all_pts, axis=0), shrink=0.9)
         plotter.remove_bounds_axes()
