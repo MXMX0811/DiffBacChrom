@@ -1,18 +1,16 @@
 import os
 import glob
-import random
 import argparse
-from typing import List, Tuple
-import numpy as np
+from typing import List
 
 import pandas as pd
 import torch
-import pyvista as pv
 
 import sys
 sys.path.append(".")
 from models.VAE.model import StructureAutoencoderKL1D  # noqa: E402
-from scripts.preprocess import center_batch, scale_batch, COORD_IDX, MASK_IDX  # noqa: E402
+from models.VAE.train import compute_vae_losses, COORD_IDX, MASK_IDX  # noqa: E402
+from scripts.preprocess import center_batch, scale_batch  # noqa: E402
 
 
 def rebuild_structure_tables(struct_pred: torch.Tensor, template_dfs: List[pd.DataFrame], output_files: List[str], output_dir: str):
@@ -52,116 +50,10 @@ def rebuild_structure_tables(struct_pred: torch.Tensor, template_dfs: List[pd.Da
         print(f"Saved reconstruction to {out_path}")
 
 
-def extract_chain_coords(struct_tensor: torch.Tensor, chain: str) -> Tuple[List[float], List[float], List[float]]:
-    """
-    struct_tensor: (W,16) normalized
-    chain: "orig" or "copy"
-    - orig uses x1/y1/z1/m1 from both rows (indices 0-3 and 8-11)
-    - copy uses x2/y2/z2/m2 from both rows (indices 4-7 and 12-15)
-    Returns lists of x,y,z with ordering along sequence, only where mask==1.
-    """
-    coords_x, coords_y, coords_z = [], [], []
-    if chain == "orig":
-        starts = [0, 8]
-    else:  # "copy"
-        starts = [4, 12]
-
-    for token in struct_tensor:
-        for start in starts:
-            x, y, z, m = token[start:start + 4]
-            if m > 0.5:
-                coords_x.append(float(x))
-                coords_y.append(float(y))
-                coords_z.append(float(z))
-    return coords_x, coords_y, coords_z
-
-
-def plot_samples(originals: torch.Tensor, reconstructions: torch.Tensor, names: List[str], save_path: str):
-    """
-    originals/reconstructions: (N, W, 16) normalized
-    """
-    def set_camera_for_points(pl: pv.Plotter, pts: np.ndarray, shrink: float = 0.9):
-        if pts.size == 0:
-            return
-        center = pts.mean(axis=0)
-        max_range = np.ptp(pts, axis=0).max()
-        max_range = max(max_range, 1e-3)
-        offset = max_range * 2.0
-        pl.camera.focal_point = center
-        pl.camera.position = center + np.array([offset, offset, offset])
-        pl.camera.up = (0, 0, 1)
-        pl.camera.parallel_projection = True
-        pl.camera.parallel_scale = (max_range * 0.5) * shrink
-
-    num_show = min(5, originals.size(0))
-    steel_blue = "#4682B4"
-    pink_light = "#FFB6C1"
-    orig_label = "Original"
-    recon_label = "Reconstruction"
-
-    # slightly shorter height; higher-res via scale factor on screenshot
-    plotter = pv.Plotter(shape=(2, num_show), window_size=(num_show * 450, 650), off_screen=True)
-    subplot_w = plotter.window_size[0] / num_show
-    subplot_h = plotter.window_size[1] / 2
-
-    for i in range(num_show):
-        # original (row 0)
-        plotter.subplot(0, i)
-        # column title centered above subplot, larger font, moved upward
-        title_x = i * subplot_w + subplot_w * 0.5
-        title_y = plotter.window_size[1] - 20
-        plotter.add_text(f"{names[i]}", position=(title_x, title_y), font_size=40, color="black")
-        if i == 0:
-            # left-side vertical row label, kept inside frame
-            y_pos = subplot_h * 0.5
-            actor = plotter.add_text(orig_label, position=(15, y_pos), font_size=18, color="black")
-            try:
-                actor.GetTextProperty().SetOrientation(90)
-            except Exception:
-                pass
-        pts_accum = []
-        for chain, color in [("orig", steel_blue), ("copy", pink_light)]:
-            x, y, z = extract_chain_coords(originals[i], chain)
-            if len(x) == 0:
-                continue
-            pts = np.column_stack((x, y, z))
-            pts_accum.append(pts)
-            plotter.add_points(pts, color=color, point_size=20, render_points_as_spheres=True)
-        if pts_accum:
-            set_camera_for_points(plotter, np.concatenate(pts_accum, axis=0), shrink=0.9)
-        plotter.remove_bounds_axes()
-
-        # reconstruction (row 1)
-        plotter.subplot(1, i)
-        if i == 0:
-            y_pos = subplot_h * 1.5
-            actor = plotter.add_text(recon_label, position=(15, y_pos), font_size=18, color="black")
-            try:
-                actor.GetTextProperty().SetOrientation(90)
-            except Exception:
-                pass
-        pts_accum = []
-        for chain, color in [("orig", steel_blue), ("copy", pink_light)]:
-            x, y, z = extract_chain_coords(reconstructions[i], chain)
-            if len(x) == 0:
-                continue
-            pts = np.column_stack((x, y, z))
-            pts_accum.append(pts)
-            plotter.add_points(pts, color=color, point_size=20, render_points_as_spheres=True)
-        if pts_accum:
-            set_camera_for_points(plotter, np.concatenate(pts_accum, axis=0), shrink=0.9)
-        plotter.remove_bounds_axes()
-
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    plotter.screenshot(save_path, scale=3.0)  # scale up for ~300 dpi output
-    plotter.close()
-    print(f"Saved visualization to {save_path}")
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root_dir", type=str, default="data/test", help="Root directory containing test TSV files")
-    parser.add_argument("--ckpt", type=str, default="checkpoints/vae/epoch_020.pt", help="VAE checkpoint path")
+    parser.add_argument("--ckpt", type=str, default="checkpoints/vae/epoch_040.pt", help="VAE checkpoint path")
     parser.add_argument("--save_recon", action="store_true", help="If set, save reconstructed TSV files")
     parser.add_argument("--outputs_dir", type=str, default="outputs", help="Directory to save TSVs/plots")
     args = parser.parse_args()
@@ -183,9 +75,7 @@ def main():
     outputs_dir = args.outputs_dir
     os.makedirs(outputs_dir, exist_ok=True)
 
-    all_orig = []
     all_recon = []
-    all_names = []
     all_templates = []
     all_output_names = []
 
@@ -193,8 +83,6 @@ def main():
     BETA_KL = 5e-3
     LAMBDA_MASK = 1.0
     bce_mask = torch.nn.BCEWithLogitsLoss().to(device)
-    coord_idx = [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]
-    mask_idx = [3, 7, 11, 15]
 
     total_loss = 0.0
     total_coord = 0.0
@@ -205,13 +93,12 @@ def main():
     latent_count = 0
 
     first_template_df = None
-    first_template_name = None
 
     for struct_path in struct_files:
         df = pd.read_csv(struct_path, sep="\t")
         groups = df.groupby("hic_index", sort=False)
         tokens = []
-        for hic_idx, g in groups:
+        for _, g in groups:
             r1 = g.iloc[0]
             r2 = g.iloc[1]
             bead1_feat = [
@@ -236,35 +123,10 @@ def main():
             z = enc.latent_dist.sample()
             recon = vae.decode(z)  # normalized
             recon_norm = recon.cpu()
-            orig_norm = struct_norm.cpu()
 
-            coords = struct_norm[..., coord_idx]
-            recon_coords = recon[..., coord_idx]
-            mask_target = struct_norm[..., mask_idx]
-            mask_pred = recon[..., mask_idx]
-
-            m0 = mask_target[..., 0:1]
-            m1 = mask_target[..., 1:2]
-            m2 = mask_target[..., 2:3]
-            m3 = mask_target[..., 3:4]
-
-            w0 = m0.expand_as(coords[..., 0:3])
-            w1 = m1.expand_as(coords[..., 3:6])
-            w2 = m2.expand_as(coords[..., 6:9])
-            w3 = m3.expand_as(coords[..., 9:12])
-            coord_weight = torch.cat([w0, w1, w2, w3], dim=-1)
-
-            coord_mse = (recon_coords - coords) ** 2 * coord_weight
-            denom = coord_weight.sum().clamp_min(1.0)
-            coord_loss = coord_mse.sum() / denom
-
-            mask_loss = bce_mask(mask_pred, mask_target)
-
-            mu = enc.mu
-            logvar = enc.logvar
-            kl = (-0.5 * (1 + logvar - mu.pow(2) - logvar.exp())).mean()
-
-            loss = coord_loss + LAMBDA_MASK * mask_loss + BETA_KL * kl
+            loss, coord_loss, mask_loss, kl = compute_vae_losses(
+                struct_norm, recon, enc.mu, enc.logvar, bce_mask, beta_kl=BETA_KL, lambda_mask=LAMBDA_MASK
+            )
 
             total_loss += loss.item()
             total_coord += coord_loss.item()
@@ -274,14 +136,11 @@ def main():
             latent_sq_sum += (enc.mu ** 2).sum().item()
             latent_count += enc.mu.numel()
 
-        all_orig.append(orig_norm)
         all_recon.append(recon_norm)
-        all_names.append(os.path.splitext(os.path.basename(struct_path))[0])
         all_templates.append(df)
         all_output_names.append(os.path.basename(struct_path))
         if first_template_df is None:
             first_template_df = df
-            first_template_name = os.path.basename(struct_path)
 
     if n_batches > 0:
         avg_loss = total_loss / n_batches
@@ -295,16 +154,20 @@ def main():
             suggested_scale = 1.0 / latent_std
             print(f"Test latent_std: {latent_std:.6f}")
             print(f"Suggested DiT latent scale (1/std): {suggested_scale:.6f}")
+        """
+        checkpoints/vae/epoch_020.pt
+        Test set losses - total: 0.007103, coord: 0.001924, mask: 0.000067, kl: 1.022382
+        Test latent_std: 0.691148
+        Suggested DiT latent scale (1/std): 1.446867
+        
+        checkpoints/vae/epoch_040.pt
+        Test set losses - total: 0.006871, coord: 0.001911, mask: 0.000016, kl: 0.988756
+        Test latent_std: 0.681476
+        Suggested DiT latent scale (1/std): 1.467403
+        """
     else:
         print("No batches processed; check dataset path.")
-        
-    '''
-    Test set losses - total: 0.007103, coord: 0.001924, mask: 0.000067, kl: 1.022382
-    Test latent_std: 0.691148
-    Suggested DiT latent scale (1/std): 1.446867
-    '''
 
-    orig_cat = torch.cat(all_orig, dim=0)
     recon_cat = torch.cat(all_recon, dim=0)
     if args.save_recon:
         rebuild_structure_tables(
@@ -313,27 +176,23 @@ def main():
             all_output_names,
             output_dir=outputs_dir,
         )
-    total_samples = orig_cat.size(0)
-    select_k = min(5, total_samples)
-    sel_idx = random.sample(range(total_samples), select_k)
-    names_sel = [all_names[i] for i in sel_idx]
-    plot_samples(orig_cat[sel_idx], recon_cat[sel_idx], names_sel, save_path=os.path.join(outputs_dir, "recon_vis.png"))
 
-    # -------- decode from pure noise using the first template's length --------
-    seq_len = len(first_template_df.groupby("hic_index", sort=False))
-    noise_batch = 10
-    noise = torch.randn(noise_batch, seq_len, vae.z_channels, device=device)
-    with torch.no_grad():
-        recon_from_noise = vae.decode(noise)  # (B, W, 16) normalized
-    noise_templates = [first_template_df.copy() for _ in range(noise_batch)]
-    noise_output_names = [f"noise_sample_{i+1}.tsv" for i in range(noise_batch)]
-    rebuild_structure_tables(
-        recon_from_noise.cpu(),
-        noise_templates,
-        noise_output_names,
-        output_dir=os.path.join(outputs_dir, "recon_from_noise"),
-    )
-    print(f"Saved {noise_batch} decoded noise samples to {os.path.join(outputs_dir, 'recon_from_noise')}")
+    # decode noise samples using first template length
+    if first_template_df is not None:
+        seq_len = len(first_template_df.groupby("hic_index", sort=False))
+        noise_batch = 10
+        noise = torch.randn(noise_batch, seq_len, vae.z_channels, device=device)
+        with torch.no_grad():
+            recon_from_noise = vae.decode(noise)  # (B, W, 16) normalized
+        noise_templates = [first_template_df.copy() for _ in range(noise_batch)]
+        noise_output_names = [f"noise_sample_{i+1}.tsv" for i in range(noise_batch)]
+        rebuild_structure_tables(
+            recon_from_noise.cpu(),
+            noise_templates,
+            noise_output_names,
+            output_dir=os.path.join(outputs_dir, "recon_from_noise"),
+        )
+        print(f"Saved {noise_batch} decoded noise samples to {os.path.join(outputs_dir, 'recon_from_noise')}")
 
 
 if __name__ == "__main__":

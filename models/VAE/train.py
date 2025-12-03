@@ -1,5 +1,6 @@
 import os
 import argparse
+from functools import partial
 
 import torch
 from torch.utils.data import DataLoader
@@ -10,16 +11,47 @@ sys.path.append(".")
 from models.VAE.model import StructureAutoencoderKL1D
 from scripts.dataloader import HiCStructureDataset, collate_fn
 
-from functools import partial
+# shared indices
+COORD_IDX = [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]
+MASK_IDX = [3, 7, 11, 15]
 
 
 def kl_loss_seq(mu, logvar):
-    """
-    标准 VAE KL 散度：对每个序列位置求KL，再对batch平均，返回标量
-    mu/logvar 形状 (B, T, D)
-    """
     kl = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())  # (B,T,D)
-    return kl.mean()  # 全局平均作为 final KL loss
+    return kl.mean()
+
+
+def compute_vae_losses(x, recon_x, mu, logvar, bce_mask, beta_kl: float, lambda_mask: float):
+    """
+    x/recon_x: (B, T, 16) normalized
+    """
+    coords = x[..., COORD_IDX]           # (B, T, 12)
+    recon_coords = recon_x[..., COORD_IDX]
+
+    mask_target = x[..., MASK_IDX]       # (B, T, 4), 0/1
+    mask_pred = recon_x[..., MASK_IDX]   # (B, T, 4) logits
+
+    m0 = mask_target[..., 0:1]
+    m1 = mask_target[..., 1:2]
+    m2 = mask_target[..., 2:3]
+    m3 = mask_target[..., 3:4]
+
+    w0 = m0.expand_as(coords[..., 0:3])
+    w1 = m1.expand_as(coords[..., 3:6])
+    w2 = m2.expand_as(coords[..., 6:9])
+    w3 = m3.expand_as(coords[..., 9:12])
+    coord_weight = torch.cat([w0, w1, w2, w3], dim=-1)  # (B,T,12)
+
+    coord_mse = (recon_coords - coords) ** 2 * coord_weight
+    denom = coord_weight.sum().clamp_min(1.0)
+    coord_loss = coord_mse.sum() / denom
+
+    mask_loss = bce_mask(mask_pred, mask_target)
+    kl = kl_loss_seq(mu, logvar)
+
+    loss = coord_loss + lambda_mask * mask_loss + beta_kl * kl
+    return loss, coord_loss, mask_loss, kl
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -31,13 +63,13 @@ def main():
     ROOT_DIR = "data/train"
     HIC_DIRNAME = "Hi-C"
     STRUCT_DIRNAME = "structure"
-    SEQ_LEN = 928              # hic_index bins
-    IN_CHANNELS = 16           # 结构输入维度 = bead_XYZ×2 + mask×2（共16维）
+    SEQ_LEN = 928
+    IN_CHANNELS = 16
     LR = 1e-4
     BETA_KL = 5e-3
     SAVE_DIR = "checkpoints/vae"
     NUM_WORKERS = 4
-    LAMBDA_MASK = 1.0          # MODIFIED: mask BCE 的权重
+    LAMBDA_MASK = 1.0
 
     os.makedirs(SAVE_DIR, exist_ok=True)
 
@@ -60,14 +92,10 @@ def main():
         pin_memory=True,
     )
 
-    # ====== INIT MODEL ======
     model = StructureAutoencoderKL1D(in_channels=IN_CHANNELS).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
-
-    # MODIFIED: BCE loss 用于 mask 通道（logits -> {0,1}）
     bce_mask = torch.nn.BCEWithLogitsLoss().to(device)
 
-    # ====== init wandb ======
     wandb.init(
         project="structure-vae",
         name=args.run_name,
@@ -81,20 +109,16 @@ def main():
         ),
     )
 
-    # ========================== TRAIN LOOP ==========================
-
     global_step = 0
-    
-    # 用于估计整个数据集上的 latent 标准差（类似 SD 的 0.18215）  # ADDED
-    latent_sq_sum = 0.0   # 累积 mu^2
-    latent_count = 0      # 累积元素个数
+    latent_sq_sum = 0.0
+    latent_count = 0
 
     for epoch in range(1, args.epochs + 1):
         model.train()
 
         total_loss = 0
-        total_coord = 0      # MODIFIED
-        total_mask = 0       # MODIFIED
+        total_coord = 0
+        total_mask = 0
         total_kl = 0
         n = 0
 
@@ -102,72 +126,19 @@ def main():
             x = batch["structure"].to(device)  # (B,928,16)
 
             optimizer.zero_grad()
-
-            # ===== forward =====
             recon_x, mu, logvar = model(x)
 
-            # ===== 拆分坐标和mask（按照我们约定的16维布局）=====  # MODIFIED
-            # token维度含义：
-            # [0] x1_beadA   [1] y1_beadA   [2] z1_beadA   [3] mask1_beadA
-            # [4] x2_beadA   [5] y2_beadA   [6] z2_beadA   [7] mask2_beadA
-            # [8] x1_beadB   [9] y1_beadB  [10] z1_beadB  [11] mask1_beadB
-            # [12] x2_beadB [13] y2_beadB [14] z2_beadB [15] mask2_beadB
-
-            # 坐标通道索引（12维）
-            coord_idx = [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]
-            # mask 通道索引（4维）
-            mask_idx = [3, 7, 11, 15]
-
-            coords = x[..., coord_idx]           # (B, T, 12)
-            recon_coords = recon_x[..., coord_idx]
-
-            mask_target = x[..., mask_idx]       # (B, T, 4), 0/1
-            mask_pred = recon_x[..., mask_idx]   # (B, T, 4) logits
-
-            # ===== 对坐标使用 mask 加权 MSE =====  # MODIFIED
-            # 每个 mask 对应三个坐标：
-            # mask_target[...,0] -> coords[...,0:3]
-            # mask_target[...,1] -> coords[...,3:6]
-            # mask_target[...,2] -> coords[...,6:9]
-            # mask_target[...,3] -> coords[...,9:12]
-
-            m0 = mask_target[..., 0:1]  # (B,T,1)
-            m1 = mask_target[..., 1:2]
-            m2 = mask_target[..., 2:3]
-            m3 = mask_target[..., 3:4]
-
-            w0 = m0.expand_as(coords[..., 0:3])   # (B,T,3)
-            w1 = m1.expand_as(coords[..., 3:6])
-            w2 = m2.expand_as(coords[..., 6:9])
-            w3 = m3.expand_as(coords[..., 9:12])
-
-            coord_weight = torch.cat([w0, w1, w2, w3], dim=-1)  # (B,T,12)
-
-            coord_mse = (recon_coords - coords) ** 2 * coord_weight
-            # 只在 mask=1 的位置归一化
-            denom = coord_weight.sum().clamp_min(1.0)
-            coord_loss = coord_mse.sum() / denom
-
-            # ===== mask loss：对mask通道做 BCEWithLogitsLoss =====  # MODIFIED
-            mask_loss = bce_mask(mask_pred, mask_target)
-
-            # ===== KL loss =====
-            kl = kl_loss_seq(mu, logvar)
-
-            # ===== 总 loss =====  # MODIFIED
-            loss = coord_loss + LAMBDA_MASK * mask_loss + BETA_KL * kl
+            loss, coord_loss, mask_loss, kl = compute_vae_losses(
+                x, recon_x, mu, logvar, bce_mask, beta_kl=BETA_KL, lambda_mask=LAMBDA_MASK
+            )
 
             loss.backward()
             optimizer.step()
-            
-            # ======== 统计 latent 标准差所需信息（用 mu 作为代表） ========  # ADDED
-            # 这里我们使用 posterior mean mu 来估计数据集中 latent 的整体尺度，
-            # 对所有 batch、所有位置、所有通道做全局二阶矩统计。
+
             with torch.no_grad():
                 latent_sq_sum += (mu ** 2).sum().item()
                 latent_count += mu.numel()
 
-            # ===== accumulate =====
             total_loss += loss.item()
             total_coord += coord_loss.item()
             total_mask += mask_loss.item()
@@ -175,7 +146,6 @@ def main():
             n += 1
             global_step += 1
 
-            # wandb logging
             wandb.log(
                 {
                     "train/loss": loss.item(),
@@ -195,7 +165,6 @@ def main():
                     f"Mask={mask_loss:.6f} KL={kl:.6f}"
                 )
 
-        # ===== epoch summary =====
         avg_loss = total_loss / n
         avg_coord = total_coord / n
         avg_mask = total_mask / n
@@ -219,7 +188,6 @@ def main():
             step=global_step,
         )
 
-        # ===== save checkpoint =====
         if epoch % 10 == 0:
             ckpt_path = f"{SAVE_DIR}/epoch_{epoch:03d}.pt"
             torch.save(
@@ -227,31 +195,26 @@ def main():
                 ckpt_path,
             )
             wandb.save(ckpt_path)
-            print(f"Checkpoint saved → {ckpt_path}")
+            print(f"Checkpoint saved at {ckpt_path}")
             
-    # ========= 训练结束后，根据累积的 mu^2 估计 latent 的整体尺度 =========  # ADDED
     if latent_count > 0:
         latent_var = latent_sq_sum / latent_count
         latent_std = latent_var ** 0.5
-        # 推荐缩放系数：和 SD 一样，通常把 latent 乘一个常数，使整体 std ≈ 1
-        # 这里建议： z_scaled = z * (1.0 / latent_std)
         suggested_scale = 1.0 / latent_std
 
         print("\n=== Estimated latent stats over training ===")
-        print(f"latent_std ≈ {latent_std:.6f}")
+        print(f"latent_std {latent_std:.6f}")
         print(f"Suggested DiT scaling factor (like 0.18215 in SD): {suggested_scale:.6f}")
 
-        # 也记录到 wandb 的 summary，方便之后查
         wandb.summary["latent_std"] = latent_std
         wandb.summary["latent_scale_for_DiT"] = suggested_scale
 
-        # 也可以顺手写到一个 txt 文件里
         os.makedirs(SAVE_DIR, exist_ok=True)
         scale_path = os.path.join(SAVE_DIR, "latent_scale.txt")
         with open(scale_path, "w") as f:
             f.write(f"latent_std {latent_std:.8f}\n")
             f.write(f"latent_scale_for_DiT {suggested_scale:.8f}\n")
-        print(f"Latent scale info saved → {scale_path}")
+        print(f"Latent scale info saved at {scale_path}")
 
     wandb.finish()
     print("\n=== TRAINING COMPLETED ===\n")
