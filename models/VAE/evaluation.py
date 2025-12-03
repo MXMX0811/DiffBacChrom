@@ -54,26 +54,25 @@ def rebuild_structure_tables(struct_pred: torch.Tensor, template_dfs: List[pd.Da
 
 def extract_chain_coords(struct_tensor: torch.Tensor, chain: str) -> Tuple[List[float], List[float], List[float]]:
     """
-    struct_tensor: (W,16) denormalized
-    chain: "A" or "B"
+    struct_tensor: (W,16) normalized
+    chain: "orig" or "copy"
+    - orig uses x1/y1/z1/m1 from both rows (indices 0-3 and 8-11)
+    - copy uses x2/y2/z2/m2 from both rows (indices 4-7 and 12-15)
     Returns lists of x,y,z with ordering along sequence, only where mask==1.
     """
     coords_x, coords_y, coords_z = [], [], []
-    if chain == "A":
-        idx = [0, 1, 2, 3, 4, 5, 6, 7]  # x1,y1,z1,mask1,x2,y2,z2,mask2
-    else:
-        idx = [8, 9, 10, 11, 12, 13, 14, 15]
+    if chain == "orig":
+        idx_groups = [(0, 1, 2, 3), (8, 9, 10, 11)]
+    else:  # "copy"
+        idx_groups = [(4, 5, 6, 7), (12, 13, 14, 15)]
 
     for token in struct_tensor:
-        x1, y1, z1, m1, x2, y2, z2, m2 = token[idx[0]:idx[0] + 8]
-        if m1 > 0.5:
-            coords_x.append(float(x1))
-            coords_y.append(float(y1))
-            coords_z.append(float(z1))
-        if m2 > 0.5:
-            coords_x.append(float(x2))
-            coords_y.append(float(y2))
-            coords_z.append(float(z2))
+        for start in idx_groups:
+            x, y, z, m = token[start], token[start + 1], token[start + 2], token[start + 3]
+            if m > 0.5:
+                coords_x.append(float(x))
+                coords_y.append(float(y))
+                coords_z.append(float(z))
     return coords_x, coords_y, coords_z
 
 
@@ -81,37 +80,57 @@ def plot_samples(originals: torch.Tensor, reconstructions: torch.Tensor, names: 
     """
     originals/reconstructions: (N, W, 16) normalized
     """
+    def set_camera_for_points(pl: pv.Plotter, pts: np.ndarray, shrink: float = 0.9):
+        if pts.size == 0:
+            return
+        center = pts.mean(axis=0)
+        max_range = np.ptp(pts, axis=0).max()
+        max_range = max(max_range, 1e-3)
+        offset = max_range * 2.0
+        pl.camera.focal_point = center
+        pl.camera.position = center + np.array([offset, offset, offset])
+        pl.camera.up = (0, 0, 1)
+        pl.camera.parallel_projection = True
+        pl.camera.parallel_scale = (max_range * 0.5) * shrink
+
     num_show = min(5, originals.size(0))
     steel_blue = "#4682B4"
     pink_light = "#FFB6C1"
 
-    plotter = pv.Plotter(shape=(2, num_show), window_size=(num_show * 400, 800), off_screen=True)
+    # slightly shorter height; higher-res via scale factor on screenshot
+    plotter = pv.Plotter(shape=(2, num_show), window_size=(num_show * 450, 650), off_screen=True)
 
     for i in range(num_show):
         # original (row 0)
         plotter.subplot(0, i)
-        plotter.add_title(f"{names[i]} original", font_size=8)
-        for chain, color in [("A", steel_blue), ("B", pink_light)]:
+        plotter.add_title(f"{names[i]} original", font_size=20)
+        pts_accum = []
+        for chain, color in [("orig", steel_blue), ("copy", pink_light)]:
             x, y, z = extract_chain_coords(originals[i], chain)
             if len(x) == 0:
                 continue
             pts = np.column_stack((x, y, z))
-            plotter.add_points(pts, color=color, point_size=4, render_points_as_spheres=True)
-        plotter.show_axes()
+            pts_accum.append(pts)
+            plotter.add_points(pts, color=color, point_size=20, render_points_as_spheres=True)
+        if pts_accum:
+            set_camera_for_points(plotter, np.concatenate(pts_accum, axis=0), shrink=0.9)
 
         # reconstruction (row 1)
         plotter.subplot(1, i)
-        plotter.add_title(f"{names[i]} recon", font_size=8)
-        for chain, color in [("A", steel_blue), ("B", pink_light)]:
+        plotter.add_title(f"{names[i]} recon", font_size=20)
+        pts_accum = []
+        for chain, color in [("orig", steel_blue), ("copy", pink_light)]:
             x, y, z = extract_chain_coords(reconstructions[i], chain)
             if len(x) == 0:
                 continue
             pts = np.column_stack((x, y, z))
-            plotter.add_points(pts, color=color, point_size=4, render_points_as_spheres=True)
-        plotter.show_axes()
+            pts_accum.append(pts)
+            plotter.add_points(pts, color=color, point_size=20, render_points_as_spheres=True)
+        if pts_accum:
+            set_camera_for_points(plotter, np.concatenate(pts_accum, axis=0), shrink=0.9)
 
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    plotter.screenshot(save_path)
+    plotter.screenshot(save_path, scale=3.0)  # scale up for ~300 dpi output
     plotter.close()
     print(f"Saved visualization to {save_path}")
 
