@@ -170,12 +170,18 @@ def main():
         avg_mask = total_mask / n
         avg_kl = total_kl / n
 
+        # per-epoch latent scale estimate
+        latent_var_epoch = latent_sq_sum / max(latent_count, 1)
+        latent_std_epoch = latent_var_epoch ** 0.5
+        suggested_scale_epoch = 1.0 / latent_std_epoch
+
         print(
             f"Epoch {epoch} | "
             f"avg_loss={avg_loss:.6f}  "
             f"avg_coord={avg_coord:.6f}  "
             f"avg_mask={avg_mask:.6f}  "
-            f"avg_kl={avg_kl:.6f}"
+            f"avg_kl={avg_kl:.6f}  "
+            f"scale_est={suggested_scale_epoch:.6f}"
         )
 
         wandb.log(
@@ -184,6 +190,7 @@ def main():
                 "epoch/coord_loss": avg_coord,
                 "epoch/mask_loss": avg_mask,
                 "epoch/kl_loss": avg_kl,
+                "epoch/latent_scale_est": suggested_scale_epoch,
             },
             step=global_step,
         )
@@ -196,25 +203,6 @@ def main():
             )
             wandb.save(ckpt_path)
             print(f"Checkpoint saved at {ckpt_path}")
-            
-    if latent_count > 0:
-        latent_var = latent_sq_sum / latent_count
-        latent_std = latent_var ** 0.5
-        suggested_scale = 1.0 / latent_std
-
-        print("\n=== Estimated latent stats over training ===")
-        print(f"latent_std {latent_std:.6f}")
-        print(f"Suggested DiT scaling factor (like 0.18215 in SD): {suggested_scale:.6f}")
-
-        wandb.summary["latent_std"] = latent_std
-        wandb.summary["latent_scale_for_DiT"] = suggested_scale
-
-        os.makedirs(SAVE_DIR, exist_ok=True)
-        scale_path = os.path.join(SAVE_DIR, "latent_scale.txt")
-        with open(scale_path, "w") as f:
-            f.write(f"latent_std {latent_std:.8f}\n")
-            f.write(f"latent_scale_for_DiT {suggested_scale:.8f}\n")
-        print(f"Latent scale info saved at {scale_path}")
 
     wandb.finish()
     print("\n=== TRAINING COMPLETED ===\n")

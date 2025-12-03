@@ -118,7 +118,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--latent_scale", type=float, default=1.467403)
+    parser.add_argument("--latent_scale", type=float, default=1.335256)
     parser.add_argument("--sample_steps", type=int, default=50)
     parser.add_argument("--save_dir", type=str, default="checkpoints/dit")
     parser.add_argument("--vae_ckpt", type=str, default="checkpoints/vae/epoch_040.pt")
