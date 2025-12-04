@@ -1,7 +1,6 @@
 .*
-checkpoints/dit/
-data/test/G1.2/*
-data/train
+checkpoints/*
+data/*
 outputs/*
 wandb
 checkpoints
