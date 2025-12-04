@@ -282,7 +282,7 @@ class DiT(nn.Module):
         mlp_ratio=4.0,
         cross_attn_interval: int | None = 1,   # use cross-attn every N layers
         learn_sigma=True,
-        gradient_checkpointing=False,   # allow gradient checkpointing to save memory
+        gradient_checkpointing=True,   # allow gradient checkpointing to save memory
     ):
         super().__init__()
         self.gradient_checkpointing = gradient_checkpointing
