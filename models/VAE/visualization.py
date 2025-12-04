@@ -82,7 +82,7 @@ def plot_samples(
     """
     originals/reconstructions: (N, W, 16) normalized.
     Randomly selects up to num_show samples to visualize.
-    4-row grid: original full points, reconstruction full points, original subsampled+lines, reconstruction subsampled+lines.
+    4-row grid: original full points, reconstruction full points, original full lines, reconstruction full lines.
     """
     def set_camera_for_points(pl: pv.Plotter, pts: np.ndarray, shrink: float = 0.9):
         if pts.size == 0:

@@ -89,6 +89,10 @@ def rebuild_structure_tables(
             continue
 
         template_df = pd.read_csv(struct_path, sep="\t")
+        # ensure numeric columns are float to avoid dtype warnings on assignment
+        for c in coord_split[0] + coord_split[1]:
+            if c in template_df.columns:
+                template_df[c] = template_df[c].astype(float)
         pred = struct_denorm[b_idx].cpu().numpy()  # (W,16)
 
         # iterate hic_index groups in original order
