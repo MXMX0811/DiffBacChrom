@@ -1,6 +1,8 @@
 .*
-data
-outputs
+checkpoints/dit
+data/test/G1.2/*
+data/train
+outputs/*
 wandb
 checkpoints
 __pycache__
