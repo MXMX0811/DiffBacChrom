@@ -26,6 +26,7 @@ matplotlib==3.10.5
 pyvista==0.46.4
 vtk==9.5.2
 seaborn==0.13.0
+colorcet==3.1.0
 
 # Logging / progress
 wandb==0.19.8

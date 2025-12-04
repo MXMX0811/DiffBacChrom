@@ -197,7 +197,7 @@ def main():
         with torch.no_grad():
             vis_loader = DataLoader(
                 dataset,
-                batch_size=min(2, args.batch_size),
+                batch_size=min(5, args.batch_size),
                 shuffle=True,
                 num_workers=0,
                 collate_fn=partial(collate_fn, train=False),

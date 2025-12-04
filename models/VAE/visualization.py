@@ -8,6 +8,8 @@ import pandas as pd
 import pyvista as pv
 import torch
 
+COLORMAP = "Spectral"
+
 import sys
 sys.path.append(".")
 from models.VAE.model import StructureAutoencoderKL1D  # noqa: E402
@@ -57,18 +59,33 @@ def collect_chain_points(struct_tensor: torch.Tensor, chain: str, step: int | No
     return points, indices
 
 
-def add_polyline(pl: pv.Plotter, points: np.ndarray, color: str, width: float = 2.0):
+def add_polyline(
+    pl: pv.Plotter,
+    points: np.ndarray,
+    indices: np.ndarray | None = None,
+    width: float = 2.0,
+    clim: tuple[float, float] | None = None,
+    cmap: str = COLORMAP,
+    color: str | None = None,
+    **kwargs,
+):
     """
-    Draw a tubular curve through the given points (no spline interpolation).
+    Draw a tubular curve through the given points.
     - points: (N,3) array
+    - indices: (N,) array of hic indices for coloring (if provided)
     - width: roughly controls tube diameter (radius ~ width*0.1)
     """
     if points.shape[0] < 2:
         return
     cells = np.hstack(([points.shape[0]], np.arange(points.shape[0], dtype=np.int32))).astype(np.int32)
     poly = pv.PolyData(points, lines=cells)
-    tube = poly.tube(radius=width * 0.1, n_sides=24)
-    pl.add_mesh(tube, color=color, smooth_shading=True)
+    if indices is not None:
+        poly["idx"] = indices.astype(np.float32)
+        tube = poly.tube(radius=width * 0.1, n_sides=24)
+        pl.add_mesh(tube, scalars="idx", cmap=cmap, clim=clim, smooth_shading=True, show_scalar_bar=False)
+    else:
+        tube = poly.tube(radius=width * 0.1, n_sides=24)
+        pl.add_mesh(tube, color=color or "#4682B4", smooth_shading=True, show_scalar_bar=False)
 
 
 def plot_samples(
@@ -106,9 +123,8 @@ def plot_samples(
     originals = originals[sel_idx]
     reconstructions = reconstructions[sel_idx]
     names = [names[i] for i in sel_idx] if names else None
-    steel_blue = "#4682B4"
-    pink_light = "#FFB6C1"
-    line_color = "#D3D3D3"
+    max_idx = max(0, originals.shape[1] - 1)
+    clim = (0.0, float(max_idx))
 
     plotter = pv.Plotter(shape=(4, num_show), window_size=(num_show * 520, 1200), off_screen=True)
 
@@ -120,13 +136,22 @@ def plot_samples(
         if title:
             plotter.add_text(title, position=(plotter.window_size[0] / num_show * (i + 0.5), plotter.window_size[1] - 20), font_size=18, color="black")
         pts_accum = []
-        for chain, color in [("orig", steel_blue), ("copy", pink_light)]:
-            x, y, z = extract_chain_coords(originals[i], chain)
-            if len(x) == 0:
+        for chain in ["orig", "copy"]:
+            pts, idxs = collect_chain_points(originals[i], chain)
+            if len(pts) == 0:
                 continue
-            pts = np.column_stack((x, y, z))
-            pts_accum.append(pts)
-            plotter.add_points(pts, color=color, point_size=20, render_points_as_spheres=True)
+            pts_arr = np.asarray(pts)
+            idx_arr = np.asarray(idxs)
+            pts_accum.append(pts_arr)
+            plotter.add_points(
+                pts_arr,
+                scalars=idx_arr,
+                cmap=COLORMAP,
+                clim=clim,
+                point_size=20,
+                render_points_as_spheres=True,
+                show_scalar_bar=False,
+            )
         if pts_accum:
             set_camera_for_points(plotter, np.concatenate(pts_accum, axis=0), shrink=0.9)
         plotter.remove_bounds_axes()
@@ -134,13 +159,22 @@ def plot_samples(
         # row 1: reconstruction full points
         plotter.subplot(1, i)
         pts_accum = []
-        for chain, color in [("orig", steel_blue), ("copy", pink_light)]:
-            x, y, z = extract_chain_coords(reconstructions[i], chain)
-            if len(x) == 0:
+        for chain in ["orig", "copy"]:
+            pts, idxs = collect_chain_points(reconstructions[i], chain)
+            if len(pts) == 0:
                 continue
-            pts = np.column_stack((x, y, z))
-            pts_accum.append(pts)
-            plotter.add_points(pts, color=color, point_size=20, render_points_as_spheres=True)
+            pts_arr = np.asarray(pts)
+            idx_arr = np.asarray(idxs)
+            pts_accum.append(pts_arr)
+            plotter.add_points(
+                pts_arr,
+                scalars=idx_arr,
+                cmap=COLORMAP,
+                clim=clim,
+                point_size=20,
+                render_points_as_spheres=True,
+                show_scalar_bar=False,
+            )
         if pts_accum:
             set_camera_for_points(plotter, np.concatenate(pts_accum, axis=0), shrink=0.9)
         plotter.remove_bounds_axes()
@@ -148,13 +182,14 @@ def plot_samples(
         # row 2: original full lines (no points)
         plotter.subplot(2, i)
         all_pts = []
-        for chain, color in [("orig", steel_blue), ("copy", pink_light)]:
-            x, y, z = extract_chain_coords(originals[i], chain)
-            if len(x) == 0:
+        for chain in ["orig", "copy"]:
+            pts, idxs = collect_chain_points(originals[i], chain)
+            if len(pts) == 0:
                 continue
-            pts = np.column_stack((x, y, z))
-            all_pts.append(pts)
-            add_polyline(plotter, pts, color=color, width=0.3)
+            pts_arr = np.asarray(pts)
+            idx_arr = np.asarray(idxs, dtype=np.float32)
+            all_pts.append(pts_arr)
+            add_polyline(plotter, pts_arr, idx_arr, width=0.3, clim=clim, cmap=COLORMAP)
         if all_pts:
             set_camera_for_points(plotter, np.concatenate(all_pts, axis=0), shrink=0.9)
         plotter.remove_bounds_axes()
@@ -162,13 +197,14 @@ def plot_samples(
         # row 3: reconstruction full lines (no points)
         plotter.subplot(3, i)
         all_pts = []
-        for chain, color in [("orig", steel_blue), ("copy", pink_light)]:
-            x, y, z = extract_chain_coords(reconstructions[i], chain)
-            if len(x) == 0:
+        for chain in ["orig", "copy"]:
+            pts, idxs = collect_chain_points(reconstructions[i], chain)
+            if len(pts) == 0:
                 continue
-            pts = np.column_stack((x, y, z))
-            all_pts.append(pts)
-            add_polyline(plotter, pts, color=color, width=0.3)
+            pts_arr = np.asarray(pts)
+            idx_arr = np.asarray(idxs, dtype=np.float32)
+            all_pts.append(pts_arr)
+            add_polyline(plotter, pts_arr, idx_arr, width=0.3, clim=clim, cmap=COLORMAP)
         if all_pts:
             set_camera_for_points(plotter, np.concatenate(all_pts, axis=0), shrink=0.9)
         plotter.remove_bounds_axes()
