@@ -37,6 +37,7 @@ class RF:
         assert C % 2 == 0
         C_half = C // 2
         vtheta, _ = torch.split(vtheta, C_half, dim=1)
+        vtheta = vtheta.permute(0, 2, 1)  # (B, W, C_half) to match data_latent shape
 
         batchwise_mse = ((noise - data_latent - vtheta) ** 2).mean(dim=list(range(1, len(data_latent.shape))))
         return batchwise_mse.mean()
@@ -58,6 +59,7 @@ class RF:
             B, C, T = vc.shape
             C_half = C // 2
             vc, _ = torch.split(vc, C_half, dim=1)
+            vc = vc.permute(0, 2, 1)  # (B, W, C)
             z = z - dt_tensor * vc
         return z
 

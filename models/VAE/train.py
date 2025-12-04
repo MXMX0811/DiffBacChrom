@@ -195,7 +195,7 @@ def main():
             step=global_step,
         )
 
-        if epoch % 10 == 0:
+        if epoch % 5 == 0:
             ckpt_path = f"{SAVE_DIR}/epoch_{epoch:03d}.pt"
             torch.save(
                 {"epoch": epoch, "model": model.state_dict(), "optimizer": optimizer.state_dict()},
