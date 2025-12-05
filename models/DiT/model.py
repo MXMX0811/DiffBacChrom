@@ -86,7 +86,7 @@ class HiCEncoder(nn.Module):
     """
     def __init__(
         self,
-        input_size: int = 928,
+        input_size: int,
         embed_dim: int = 512,
         depth: int = 8,
         num_heads: int = 8,
@@ -274,7 +274,7 @@ class DiT(nn.Module):
     """
     def __init__(
         self,
-        input_size=928,        # sequence length (should match HiC W, e.g., 928)
+        input_size: int,       # sequence length (should match HiC W)
         in_channels=4,
         hidden_size=1152,
         depth=28,

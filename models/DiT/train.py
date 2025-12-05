@@ -140,8 +140,16 @@ def main():
         root_dir=args.root_dir,
         hic_dirname=args.hic_dirname,
         struct_dirname=args.struct_dirname,
-        expected_size=928,
     )
+
+    # Infer sequence length W from first sample (structure and Hi-C should match)
+    first_hic_path, first_struct_path = dataset.samples[0]
+    seq_len_struct = dataset._load_structure_seq(first_struct_path).shape[0]
+    seq_len_hic = dataset._load_hic_matrix(first_hic_path).shape[-1]
+    if seq_len_struct != seq_len_hic:
+        raise ValueError(f"Mismatch between structure length ({seq_len_struct}) and Hi-C size ({seq_len_hic})")
+    seq_len = seq_len_struct
+    print(f"Inferred sequence length: W={seq_len}")
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -161,7 +169,7 @@ def main():
     for p in vae.parameters():
         p.requires_grad_(False)
 
-    model = DiT_models["DiT-L"](input_size=dataset.expected_size, in_channels=vae.z_channels).to(device)
+    model = DiT_models["DiT-L"](input_size=seq_len, in_channels=vae.z_channels).to(device)
 
     rf = RF(model)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0)
