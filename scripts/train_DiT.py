@@ -11,7 +11,7 @@ import wandb
 
 import sys
 sys.path.append(".")
-from model import DiT_models  # noqa: E402
+from models.DiT.model import DiT_models  # noqa: E402
 from models.VAE.model import StructureAutoencoderKL1D  # noqa: E402
 from scripts.dataloader import HiCStructureDataset, collate_fn  # noqa: E402
 
