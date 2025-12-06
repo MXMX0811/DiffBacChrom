@@ -11,8 +11,13 @@ import torch
 COLORMAP = "Spectral"
 
 import sys
-sys.path.append(".")
-from models.VAE import StructureAutoencoderKL1D  # noqa: E402
+import os
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from diffbacchrom.vae import StructureAutoencoderKL1D  # noqa: E402
 from scripts.preprocess import center_batch, scale_batch  # noqa: E402
 
 

@@ -10,9 +10,13 @@ from tqdm import tqdm
 import wandb
 
 import sys
-sys.path.append(".")
-from models.DiT import DiT_models  # noqa: E402
-from models.VAE import StructureAutoencoderKL1D  # noqa: E402
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from diffbacchrom.dit import DiT_models  # noqa: E402
+from diffbacchrom.vae import StructureAutoencoderKL1D  # noqa: E402
 from scripts.dataloader import HiCStructureDataset, collate_fn  # noqa: E402
 
 

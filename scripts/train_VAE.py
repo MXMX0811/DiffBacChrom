@@ -7,8 +7,12 @@ from torch.utils.data import DataLoader
 import wandb
 
 import sys
-sys.path.append(".")
-from models.VAE import StructureAutoencoderKL1D
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from diffbacchrom.vae import StructureAutoencoderKL1D
 from scripts.dataloader import HiCStructureDataset, collate_fn
 
 # shared indices
