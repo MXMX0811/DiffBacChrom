@@ -12,7 +12,7 @@ COLORMAP = "Spectral"
 
 import sys
 sys.path.append(".")
-from models.VAE.model import StructureAutoencoderKL1D  # noqa: E402
+from models.VAE import StructureAutoencoderKL1D  # noqa: E402
 from scripts.preprocess import center_batch, scale_batch  # noqa: E402
 
 

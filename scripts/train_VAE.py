@@ -8,7 +8,7 @@ import wandb
 
 import sys
 sys.path.append(".")
-from models.VAE.model import StructureAutoencoderKL1D
+from models.VAE import StructureAutoencoderKL1D
 from scripts.dataloader import HiCStructureDataset, collate_fn
 
 # shared indices
