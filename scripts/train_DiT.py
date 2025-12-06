@@ -4,6 +4,7 @@ from functools import partial
 from typing import Dict, List
 
 import pandas as pd
+import numpy as np 
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -119,6 +120,15 @@ def rebuild_structure_tables(
         template_df.to_csv(out_path, sep="\t", index=False)
         print(f"Saved reconstruction to {out_path}")
 
+from torch.optim.lr_scheduler import LambdaLR
+
+def get_scheduler(opt, warmup_steps=500, total_steps=10000):
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return step / warmup_steps
+        return 0.5 * (1 + np.cos(np.pi * (step - warmup_steps) / (total_steps - warmup_steps)))
+    return LambdaLR(opt, lr_lambda)
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -127,7 +137,7 @@ def main():
     parser.add_argument("--struct_dirname", type=str, default="structure")
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=8)
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--latent_scale", type=float, default=1.335256)
     parser.add_argument("--sample_steps", type=int, default=50)
     parser.add_argument("--save_dir", type=str, default="checkpoints/dit")
@@ -177,6 +187,7 @@ def main():
 
     rf = RF(model)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0)
+    scheduler = get_scheduler(optimizer, warmup_steps=500, total_steps=args.epochs * len(dataloader))
 
     wandb.init(project="rf_dit_structure", name=args.run_name)
 
@@ -196,9 +207,15 @@ def main():
             loss.backward()
             torch.nn.utils.clip_grad_norm_(rf.model.parameters(), max_norm=1.0)
             optimizer.step()
+            scheduler.step()
 
             epoch_loss += loss.item()
-            wandb.log({"train/loss": loss.item()})
+            wandb.log(
+                {
+                    "train/loss": loss.item(),
+                    "train/lr": optimizer.param_groups[0]["lr"],
+                }
+            )
 
         avg_loss = epoch_loss / len(dataloader)
         print(f"Epoch [{epoch+1}/{args.epochs}] Loss: {avg_loss:.6f}")
