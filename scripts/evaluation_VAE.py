@@ -16,43 +16,7 @@ if PROJECT_ROOT not in sys.path:
 from diffbacchrom.vae import StructureAutoencoderKL1D  # noqa: E402
 from scripts.train_vae import compute_vae_losses, COORD_IDX, MASK_IDX  # noqa: E402
 from scripts.preprocess import center_batch, scale_batch  # noqa: E402
-
-
-def rebuild_structure_tables(struct_pred: torch.Tensor, template_dfs: List[pd.DataFrame], output_files: List[str], output_dir: str):
-    """
-    Save reconstructed structures to TSVs matching original format.
-    struct_pred: (B, W, 16) on CPU (normalized space)
-    """
-    os.makedirs(output_dir, exist_ok=True)
-    coord_split = [
-        ["x1", "y1", "z1", "mask1", "x2", "y2", "z2", "mask2"],
-        ["x1", "y1", "z1", "mask1", "x2", "y2", "z2", "mask2"],
-    ]
-
-    for b_idx, (template_df, out_name) in enumerate(zip(template_dfs, output_files)):
-        df = template_df.copy()
-        # ensure coord/mask columns are float to avoid pandas dtype warnings on assignment
-        for c in ["x1", "y1", "z1", "mask1", "x2", "y2", "z2", "mask2"]:
-            if c in df.columns:
-                df[c] = df[c].astype(float)
-        pred = struct_pred[b_idx].cpu().numpy()  # (W,16) normalized
-
-        grouped = df.groupby("hic_index", sort=False)
-        token_idx = 0
-        for _, grp in grouped:
-            token = pred[token_idx]
-            token_idx += 1
-
-            row1_vals = token[:8]
-            row2_vals = token[8:]
-
-            row_indices = grp.index.tolist()
-            df.loc[row_indices[0], coord_split[0]] = row1_vals
-            df.loc[row_indices[1], coord_split[1]] = row2_vals
-
-        out_path = os.path.join(output_dir, out_name)
-        df.to_csv(out_path, sep="\t", index=False)
-        print(f"Saved reconstruction to {out_path}")
+from scripts.sample_vae import rebuild_structure_tables  # noqa: E402
 
 
 def main():
@@ -83,6 +47,9 @@ def main():
     all_recon = []
     all_templates = []
     all_output_names = []
+    mu_sum = None
+    std_sum = None
+    count_mu = 0
 
     # loss components (match training)
     BETA_KL = 5e-3
@@ -141,11 +108,21 @@ def main():
             latent_sq_sum += (enc.mu ** 2).sum().item()
             latent_count += enc.mu.numel()
 
-        all_recon.append(recon_norm)
-        all_templates.append(df)
-        all_output_names.append(os.path.basename(struct_path))
-        if first_template_df is None:
-            first_template_df = df
+            all_recon.append(recon_norm)
+            all_templates.append(df)
+            all_output_names.append(os.path.basename(struct_path))
+            # accumulate latent stats
+            std = torch.exp(0.5 * enc.logvar).cpu()
+            mu_cpu = enc.mu.cpu()
+            if mu_sum is None:
+                mu_sum = mu_cpu.sum(dim=0, keepdim=True)
+                std_sum = std.sum(dim=0, keepdim=True)
+            else:
+                mu_sum += mu_cpu.sum(dim=0, keepdim=True)
+                std_sum += std.sum(dim=0, keepdim=True)
+            count_mu += mu_cpu.shape[0]
+            if first_template_df is None:
+                first_template_df = df
 
     if n_batches > 0:
         avg_loss = total_loss / n_batches
@@ -175,29 +152,14 @@ def main():
 
     recon_cat = torch.cat(all_recon, dim=0)
     if args.save_recon:
-        rebuild_structure_tables(
-            recon_cat,
-            all_templates,
-            all_output_names,
-            output_dir=outputs_dir,
-        )
-
-    # decode noise samples using first template length
-    if first_template_df is not None:
-        seq_len = len(first_template_df.groupby("hic_index", sort=False))
-        noise_batch = 10
-        noise = torch.randn(noise_batch, seq_len, vae.z_channels, device=device)
-        with torch.no_grad():
-            recon_from_noise = vae.decode(noise)  # (B, W, 16) normalized
-        noise_templates = [first_template_df.copy() for _ in range(noise_batch)]
-        noise_output_names = [f"noise_sample_{i+1}.tsv" for i in range(noise_batch)]
-        rebuild_structure_tables(
-            recon_from_noise.cpu(),
-            noise_templates,
-            noise_output_names,
-            output_dir=os.path.join(outputs_dir, "recon_from_noise"),
-        )
-        print(f"Saved {noise_batch} decoded noise samples to {os.path.join(outputs_dir, 'recon_from_noise')}")
+        # reuse rebuild_structure_tables from sample_vae via simple loop
+        os.makedirs(outputs_dir, exist_ok=True)
+        for b_idx, (template_df, out_name) in enumerate(zip(all_templates, all_output_names)):
+            rebuild_structure_tables(
+                recon_cat[b_idx:b_idx+1],
+                template_df,
+                output_dir=outputs_dir,
+            )
 
 
 if __name__ == "__main__":

@@ -122,7 +122,7 @@ def rebuild_structure_tables(
 
 from torch.optim.lr_scheduler import LambdaLR
 
-def get_scheduler(opt, warmup_steps=500, total_steps=10000):
+def get_scheduler(opt, warmup_steps=1000, total_steps=10000):
     def lr_lambda(step):
         if step < warmup_steps:
             return step / warmup_steps
@@ -187,7 +187,7 @@ def main():
 
     rf = RF(model)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0)
-    scheduler = get_scheduler(optimizer, warmup_steps=500, total_steps=args.epochs * len(dataloader))
+    scheduler = get_scheduler(optimizer, warmup_steps=1000, total_steps=args.epochs * len(dataloader))
 
     wandb.init(project="rf_dit_structure", name=args.run_name)
 
