@@ -1,6 +1,8 @@
 import os
 import sys
 import argparse
+from typing import List
+
 import torch
 import pandas as pd
 
@@ -24,39 +26,25 @@ def apply_mask_threshold(struct: torch.Tensor) -> torch.Tensor:
     return struct_view.reshape(struct.shape)
 
 
-def rebuild_structure_tables(struct_pred: torch.Tensor, template_df: pd.DataFrame, output_dir: str):
+def rebuild_structure_tables(struct_pred: torch.Tensor, template_df: pd.DataFrame, output_dir: str, start_idx: int = 0):
     """
-    Save reconstructed structures to TSVs matching original format.
+    Save reconstructed structures to TSVs using sequential hic_index; bead_index columns are ignored.
     struct_pred: (B, W, 16) on CPU (normalized space)
     """
     os.makedirs(output_dir, exist_ok=True)
-    coord_split = [
-        ["x1", "y1", "z1", "mask1", "x2", "y2", "z2", "mask2"],
-        ["x1", "y1", "z1", "mask1", "x2", "y2", "z2", "mask2"],
-    ]
+    columns = ["hic_index", "x1", "y1", "z1", "mask1", "x2", "y2", "z2", "mask2"]
 
-    grouped = template_df.groupby("hic_index", sort=False)
     for b_idx in range(struct_pred.shape[0]):
-        df = template_df.copy()
-        for c in ["x1", "y1", "z1", "mask1", "x2", "y2", "z2", "mask2"]:
-            if c in df.columns:
-                df[c] = df[c].astype(float)
-        pred = struct_pred[b_idx].cpu().numpy()  # (W,16) normalized
+        tokens = struct_pred[b_idx].cpu().numpy()  # (W,16)
+        rows: List[List[float]] = []
+        for hic_idx, token in enumerate(tokens):
+            row1_vals = token[:8].tolist()
+            row2_vals = token[8:].tolist()
+            rows.append([hic_idx] + row1_vals)
+            rows.append([hic_idx] + row2_vals)
 
-        token_idx = 0
-        for _, grp in grouped:
-            token = pred[token_idx]
-            token_idx += 1
-
-            row1_vals = token[:8]
-            row2_vals = token[8:]
-
-            row_indices = grp.index.tolist()
-            df.loc[row_indices[0], coord_split[0]] = row1_vals
-            df.loc[row_indices[1], coord_split[1]] = row2_vals
-
-        df = df.drop(columns=[c for c in df.columns if c.startswith("bead_index")], errors="ignore")
-        out_path = os.path.join(output_dir, f"noise_sample_{b_idx+1}.tsv")
+        df = pd.DataFrame(rows, columns=columns)
+        out_path = os.path.join(output_dir, f"noise_sample_{start_idx + b_idx + 1:04d}.tsv")
         df.to_csv(out_path, sep="\t", index=False)
         print(f"Saved reconstruction to {out_path}")
 
@@ -83,6 +71,7 @@ def main():
 
     # load template to infer seq_len
     df = pd.read_csv(args.template, sep="\t")
+    df = df.drop(columns=[c for c in df.columns if c.startswith("bead_index")], errors="ignore")
     struct_tensor = []
     groups = df.groupby("hic_index", sort=False)
     for _, g in groups:

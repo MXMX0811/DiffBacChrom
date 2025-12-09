@@ -79,46 +79,36 @@ def rebuild_structure_tables(
     """
     Rebuild TSVs matching the original format: for each hic_index two rows (bead1, bead2).
     struct_denorm: (B, W, 16) on CPU
-    struct_lookup: basename(struct_path) -> full struct_path (for column names and bead indices)
+    struct_lookup: kept for API compatibility (unused)
     """
     os.makedirs(output_dir, exist_ok=True)
-    coord_split = [
-        ["x1", "y1", "z1", "mask1", "x2", "y2", "z2", "mask2"],
-        ["x1", "y1", "z1", "mask1", "x2", "y2", "z2", "mask2"],
-    ]
+    columns = ["hic_index", "x1", "y1", "z1", "mask1", "x2", "y2", "z2", "mask2"]
 
-    for b_idx, (sid, sfile) in enumerate(zip(sample_ids, structure_files)):
-        struct_path = struct_lookup.get(sfile)
-        if struct_path is None:
-            print(f"[Warn] structure file not found in lookup: {sfile}, skip saving.")
-            continue
+    for b_idx, sid in enumerate(sample_ids):
+        tokens = struct_denorm[b_idx].cpu().numpy()  # (W,16)
+        rows: List[List[float]] = []
+        for hic_idx, token in enumerate(tokens):
+            row1_vals = token[:8].tolist()
+            row2_vals = token[8:].tolist()
+            rows.append([hic_idx] + row1_vals)
+            rows.append([hic_idx] + row2_vals)
 
-        template_df = pd.read_csv(struct_path, sep="\t")
-        # ensure numeric columns are float to avoid dtype warnings on assignment
-        for c in coord_split[0] + coord_split[1]:
-            if c in template_df.columns:
-                template_df[c] = template_df[c].astype(float)
-        pred = struct_denorm[b_idx].cpu().numpy()  # (W,16)
-
-        # iterate hic_index groups in original order
-        grouped = template_df.groupby("hic_index", sort=False)
-        token_idx = 0
-        for hic_idx, grp in grouped:
-            if len(grp) != 2:
-                raise ValueError(f"Expected 2 rows per hic_index in {sfile}, got {len(grp)} at {hic_idx}")
-            token = pred[token_idx]
-            token_idx += 1
-
-            row1_vals = token[:8]
-            row2_vals = token[8:]
-
-            row_indices = grp.index.tolist()
-            template_df.loc[row_indices[0], coord_split[0]] = row1_vals
-            template_df.loc[row_indices[1], coord_split[1]] = row2_vals
-
+        df = pd.DataFrame(rows, columns=columns)
         out_path = os.path.join(output_dir, f"{sid}_recon.tsv")
-        template_df.to_csv(out_path, sep="\t", index=False)
+        df.to_csv(out_path, sep="\t", index=False)
         print(f"Saved reconstruction to {out_path}")
+
+
+def apply_mask_threshold(struct: torch.Tensor) -> torch.Tensor:
+    """
+    Binarize mask channels (>0.5 -> 1, otherwise 0) and zero coordinates where mask is 0.
+    Expects last dimension ordered as (x, y, z, mask) repeated 4 times.
+    """
+    struct_view = struct.reshape(*struct.shape[:-1], 4, 4)
+    masks = (struct_view[..., 3] > 0.5).float()
+    struct_view[..., 3] = masks
+    struct_view[..., 0:3] = struct_view[..., 0:3] * masks.unsqueeze(-1)
+    return struct_view.reshape(struct.shape)
 
 from torch.optim.lr_scheduler import LambdaLR
 
@@ -243,6 +233,7 @@ def main():
                 shape=(hic.shape[0], seq_len, vae.z_channels),
             )
             decoded = vae.decode(sample_latent / args.latent_scale)  # (B,W,16) in normalized space
+            decoded = apply_mask_threshold(decoded)
             decoded_cpu = decoded.cpu()
 
             rebuild_structure_tables(
