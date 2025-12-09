@@ -70,7 +70,6 @@ def main():
     parser.add_argument("--num_samples", type=int, default=500, help="Number of sequences to generate")
     parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
     parser.add_argument("--output_root", type=str, default="outputs/dit_samples", help="Output root directory")
-    parser.add_argument("--contact_cutoff", type=float, default=1.5, help="Distance threshold to count a contact when converting generated structures to Hi-C")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
