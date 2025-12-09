@@ -12,6 +12,18 @@ from diffbacchrom.vae import StructureAutoencoderKL1D  # noqa: E402
 from scripts.preprocess import center_batch, scale_batch  # noqa: E402
 
 
+def apply_mask_threshold(struct: torch.Tensor) -> torch.Tensor:
+    """
+    Binarize mask channels (>0.5 -> 1, otherwise 0) and zero coordinates where mask is 0.
+    Expects last dimension ordered as (x, y, z, mask) repeated 4 times.
+    """
+    struct_view = struct.reshape(*struct.shape[:-1], 4, 4)  # (..., 4 beads, xyz+mask)
+    masks = (struct_view[..., 3] > 0.5).float()
+    struct_view[..., 3] = masks
+    struct_view[..., 0:3] = struct_view[..., 0:3] * masks.unsqueeze(-1)
+    return struct_view.reshape(struct.shape)
+
+
 def rebuild_structure_tables(struct_pred: torch.Tensor, template_df: pd.DataFrame, output_dir: str):
     """
     Save reconstructed structures to TSVs matching original format.
@@ -43,6 +55,7 @@ def rebuild_structure_tables(struct_pred: torch.Tensor, template_df: pd.DataFram
             df.loc[row_indices[0], coord_split[0]] = row1_vals
             df.loc[row_indices[1], coord_split[1]] = row2_vals
 
+        df = df.drop(columns=[c for c in df.columns if c.startswith("bead_index")], errors="ignore")
         out_path = os.path.join(output_dir, f"noise_sample_{b_idx+1}.tsv")
         df.to_csv(out_path, sep="\t", index=False)
         print(f"Saved reconstruction to {out_path}")
@@ -94,6 +107,7 @@ def main():
 
     with torch.no_grad():
         recon_from_noise = vae.decode(noise)  # (B, W, 16) normalized
+        recon_from_noise = apply_mask_threshold(recon_from_noise)
 
     rebuild_structure_tables(
         recon_from_noise.cpu(),
@@ -105,4 +119,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
