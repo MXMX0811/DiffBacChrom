@@ -20,6 +20,9 @@ from diffbacchrom.dit import DiT_models  # noqa: E402
 from diffbacchrom.vae import StructureAutoencoderKL1D  # noqa: E402
 from scripts.dataloader import HiCStructureDataset, collate_fn  # noqa: E402
 
+ORIGINAL_RMS = 11.1462
+NORMALIZED_RMS = 1.1525
+
 
 class RF:
     def __init__(self, model):
@@ -108,6 +111,13 @@ def apply_mask_threshold(struct: torch.Tensor) -> torch.Tensor:
     masks = (struct_view[..., 3] > 0.5).float()
     struct_view[..., 3] = masks
     struct_view[..., 0:3] = struct_view[..., 0:3] * masks.unsqueeze(-1)
+    return struct_view.reshape(struct.shape)
+
+
+def scale_xyz(struct: torch.Tensor, scale: float) -> torch.Tensor:
+    """Scale xyz channels by a factor without touching mask channels."""
+    struct_view = struct.reshape(*struct.shape[:-1], 4, 4)
+    struct_view[..., 0:3] = struct_view[..., 0:3] * scale
     return struct_view.reshape(struct.shape)
 
 from torch.optim.lr_scheduler import LambdaLR
@@ -234,6 +244,7 @@ def main():
             )
             decoded = vae.decode(sample_latent / args.latent_scale)  # (B,W,16) in normalized space
             decoded = apply_mask_threshold(decoded)
+            decoded = scale_xyz(decoded, ORIGINAL_RMS / NORMALIZED_RMS)
             decoded_cpu = decoded.cpu()
 
             rebuild_structure_tables(
