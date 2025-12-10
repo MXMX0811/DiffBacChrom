@@ -64,6 +64,13 @@ def apply_mask_threshold(struct: torch.Tensor) -> torch.Tensor:
     return struct_view.reshape(struct.shape)
 
 
+def scale_xyz(struct: torch.Tensor, scale: float) -> torch.Tensor:
+    """Scale xyz channels by a factor without touching mask channels."""
+    struct_view = struct.reshape(*struct.shape[:-1], 4, 4)
+    struct_view[..., 0:3] = struct_view[..., 0:3] * scale
+    return struct_view.reshape(struct.shape)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--hic_path", type=str, default="data/train/Pair_10/Pair_10_sim_hic_freq.tsv", help="Path to Hi-C tsv (e.g., data/train/Pair_X/Pair_X_sim_hic_freq.tsv)")
@@ -111,6 +118,7 @@ def main():
         sample_latent = rf.sample(hic_batch, sample_steps=args.sample_steps, shape=(cur_bs, seq_len, vae.z_channels))
         decoded = vae.decode(sample_latent / args.latent_scale)  # normalized space
         decoded = apply_mask_threshold(decoded)
+        decoded = scale_xyz(decoded, ORIGINAL_RMS / NORMALIZED_RMS)
         decoded_cpu = decoded.cpu()
         save_structures(decoded_cpu, out_dir, start_idx=saved_count)
 
