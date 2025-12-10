@@ -120,6 +120,15 @@ def scale_xyz(struct: torch.Tensor, scale: float) -> torch.Tensor:
     struct_view[..., 0:3] = struct_view[..., 0:3] * scale
     return struct_view.reshape(struct.shape)
 
+
+def count_params(module: torch.nn.Module, trainable_only: bool = True) -> int:
+    """Return parameter count; include frozen params when trainable_only=False."""
+    return sum(p.numel() for p in module.parameters() if (p.requires_grad or not trainable_only))
+
+
+def format_params(n: int) -> str:
+    return f"{n:,} ({n / 1e6:.2f}M)"
+
 from torch.optim.lr_scheduler import LambdaLR
 
 def get_scheduler(opt, warmup_steps=1000, total_steps=10000):
@@ -184,6 +193,25 @@ def main():
         p.requires_grad_(False)
 
     model = DiT_models["DiT-L"](input_size=seq_len, in_channels=vae.z_channels).to(device)
+
+    # report parameter counts before training
+    vae_params = count_params(vae, trainable_only=False)
+    hic_params = count_params(model.hic_encoder, trainable_only=False)
+    dit_backbone_params = sum(
+        p.numel() for name, p in model.named_parameters() if "hic_encoder" not in name
+    )
+    print("Parameter counts (all params):")
+    print(f"  VAE: {format_params(vae_params)}")
+    print(f"  HiC encoder: {format_params(hic_params)}")
+    print(f"  DiT backbone: {format_params(dit_backbone_params)}")
+    
+    '''
+    For 1D-ResNet18 VAE and DiT-L
+    Parameter counts (all params):
+        VAE: 3,598,128 (3.60M)
+        HiC encoder: 27,646,464 (27.65M)
+        DiT backbone: 634,246,176 (634.25M)
+    '''
 
     rf = RF(model)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0)
