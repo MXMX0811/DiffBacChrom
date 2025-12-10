@@ -18,6 +18,9 @@ from diffbacchrom.dit import DiT_models  # noqa: E402
 from diffbacchrom.vae import StructureAutoencoderKL1D  # noqa: E402
 from scripts.train_dit import RF  # noqa: E402
 
+ORIGINAL_RMS = 11.1462
+NORMALIZED_RMS = 1.1525
+
 
 def load_hic_matrix(hic_path: str) -> torch.Tensor:
     df = pd.read_csv(hic_path, sep="\t")
