@@ -140,7 +140,7 @@ def main():
     parser.add_argument("--sample_steps", type=int, default=50)
     parser.add_argument("--save_dir", type=str, default="checkpoints/dit")
     parser.add_argument("--vae_ckpt", type=str, default="checkpoints/vae/epoch_040.pt")
-    parser.add_argument("--run_name", type=str, default="rf_dit_structure")
+    parser.add_argument("--run_name", type=str, default="diffbacchrom-dit")
     args = parser.parse_args()
 
     os.makedirs(args.save_dir, exist_ok=True)

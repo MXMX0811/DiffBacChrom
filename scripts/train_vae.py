@@ -60,7 +60,7 @@ def compute_vae_losses(x, recon_x, mu, logvar, bce_mask, beta_kl: float, lambda_
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--run_name", type=str, default="structure-vae")
+    parser.add_argument("--run_name", type=str, default="diffbacchrom-vae")
     parser.add_argument("--batch_size", type=int, default=50)
     args = parser.parse_args()
 
