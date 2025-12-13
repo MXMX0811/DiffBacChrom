@@ -68,6 +68,7 @@ def main():
     parser.add_argument("--vae_ckpt", type=str, default="checkpoints/vae/epoch_040.pt", help="VAE checkpoint path")
     parser.add_argument("--sample_steps", type=int, default=50, help="RF sampling steps")
     parser.add_argument("--use_global_cond", type=bool, default=True, help="Whether CrossDiT uses global conditioning")
+    parser.add_argument("--cfg_scale", type=float, default=1.0, help="Classifier-free guidance scale for inference")
     parser.add_argument("--num_samples", type=int, default=500, help="Number of sequences to generate")
     parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
     parser.add_argument("--output_root", type=str, default="outputs/dit_samples", help="Output root directory")
@@ -89,9 +90,11 @@ def main():
     for p in vae.parameters():
         p.requires_grad_(False)
 
-    dit = DiT_models["DiT-L"](input_size=seq_len, 
-                              in_channels=vae.z_channels, 
-                              use_global_cond=args.use_global_cond).to(device)
+    dit = DiT_models["DiT-L"](
+        input_size=seq_len, 
+        in_channels=vae.z_channels, 
+        use_global_cond=args.use_global_cond
+    ).to(device)
     ckpt = torch.load(args.dit_ckpt, map_location="cpu")
     dit.load_state_dict(ckpt["model"])
     dit.eval()
@@ -108,7 +111,12 @@ def main():
     while remaining > 0:
         cur_bs = min(batch_size, remaining)
         hic_batch = hic.repeat(cur_bs, 1, 1, 1)  # (cur_bs,1,W,W)
-        sample_latent = rf.sample(hic_batch, sample_steps=args.sample_steps, shape=(cur_bs, seq_len, vae.z_channels))
+        sample_latent = rf.sample(
+                hic, 
+                sample_steps=args.sample_steps, 
+                shape=(hic.shape[0], seq_len, vae.z_channels), 
+                cfg_scale=args.cfg_scale
+        )
         decoded = vae.decode(sample_latent / args.latent_scale)  # normalized space
         decoded = apply_mask_threshold(decoded)
         decoded_cpu = decoded.cpu()
