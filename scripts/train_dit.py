@@ -257,11 +257,7 @@ def main():
             structure_files = batch["structure_file"]
 
             seq_len = hic.shape[-1]
-            sample_latent = rf.sample(
-                hic,
-                sample_steps=args.sample_steps,
-                shape=(hic.shape[0], seq_len, vae.z_channels),
-            )
+            sample_latent = rf.sample(hic, sample_steps=args.sample_steps, shape=(hic.shape[0], seq_len, vae.z_channels))
             decoded = vae.decode(sample_latent / args.latent_scale)  # (B,W,16) in normalized space
             decoded = apply_mask_threshold(decoded)
             decoded_cpu = decoded.cpu()
