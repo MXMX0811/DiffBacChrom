@@ -101,7 +101,7 @@ def main():
     bce_mask = torch.nn.BCEWithLogitsLoss().to(device)
 
     wandb.init(
-        project="structure-vae",
+        project="diffbacchrom-vae",
         name=args.run_name,
         config=dict(
             epochs=args.epochs,

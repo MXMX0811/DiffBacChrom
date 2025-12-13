@@ -195,8 +195,8 @@ class DiTBlock(nn.Module):
     """
     DiT block with:
       - Self-attention
-      - Cross-attention (optional)
-      - MLP
+      - Joint attention with condition tokens (optional, MM-DiT style)
+      - Modality-specific MLPs
       - adaLN-zero modulation
     """
     def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, use_cross_attn: bool = True):
@@ -206,45 +206,61 @@ class DiTBlock(nn.Module):
         self.norm1 = nn.LayerNorm(hidden_size, eps=1e-6)
         self.self_attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True)
 
-        self.norm_cross = nn.LayerNorm(hidden_size, eps=1e-6)
-        # Cross attention
-        self.cross_attn = nn.MultiheadAttention(
-            embed_dim=hidden_size, num_heads=num_heads, batch_first=True,    # allow (B, T, C)
-        )
+        # Joint attention (MM-DiT style) over latent + condition tokens
+        self.norm_joint_x = nn.LayerNorm(hidden_size, eps=1e-6)
+        self.norm_joint_c = nn.LayerNorm(hidden_size, eps=1e-6)
+        self.joint_attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True)
 
-        self.norm2 = nn.LayerNorm(hidden_size, eps=1e-6)
+        # Modality-specific MLPs
+        self.norm2_x = nn.LayerNorm(hidden_size, eps=1e-6)
+        self.norm2_c = nn.LayerNorm(hidden_size, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         approx_gelu = lambda: nn.GELU(approximate="tanh")
         self.mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu)
+        self.mlp_cond = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu)
 
         # adaLN-zero
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(hidden_size, 9 * hidden_size)  # 9 groups needed now
+            # groups: self(x) 3, joint(x) 3, joint(c) 3, mlp(x) 3, mlp(c) 3 -> 15
+            nn.Linear(hidden_size, 15 * hidden_size)
         )
 
     def forward(self, x, c, cond_tokens):
         """
         x: (B, T_latent, D)
         c: (B, D)               # timestep embedding + global cond
-        cond_tokens: (B, S_cond, D)  # Hi-C encoder tokens
+        cond_tokens: (B, S_cond, D)  # Hi-C encoder tokens (updated in-place when joint attention is used)
         """
         # slice adaLN params
         (
             shift_self, scale_self, gate_self,
-            shift_cross, scale_cross, gate_cross,
-            shift_mlp, scale_mlp, gate_mlp,
-        ) = self.adaLN_modulation(c).chunk(9, dim=1)
+            shift_joint_x, scale_joint_x, gate_joint_x,
+            shift_joint_c, scale_joint_c, gate_joint_c,
+            shift_mlp_x, scale_mlp_x, gate_mlp_x,
+            shift_mlp_c, scale_mlp_c, gate_mlp_c,
+        ) = self.adaLN_modulation(c).chunk(15, dim=1)
 
         x = x + gate_self.unsqueeze(1) * self.self_attn(modulate(self.norm1(x), shift_self, scale_self))
 
-        q = modulate(self.norm_cross(x), shift_cross, scale_cross)
-        cross_out, _ = self.cross_attn(q, cond_tokens, cond_tokens, need_weights=False)
-        x = x + gate_cross.unsqueeze(1) * cross_out
+        if self.use_cross_attn:
+            # Joint attention over concatenated latent and condition tokens
+            x_mod = modulate(self.norm_joint_x(x), shift_joint_x, scale_joint_x)
+            cond_mod = modulate(self.norm_joint_c(cond_tokens), shift_joint_c, scale_joint_c)
+            joint = torch.cat([x_mod, cond_mod], dim=1)
+            joint_out = self.joint_attn(joint)
+            x_out, cond_out = joint_out.split([x.shape[1], cond_tokens.shape[1]], dim=1)
+            x = x + gate_joint_x.unsqueeze(1) * x_out
+            cond_tokens = cond_tokens + gate_joint_c.unsqueeze(1) * cond_out
 
-        x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+            # Per-modality MLP updates
+            x = x + gate_mlp_x.unsqueeze(1) * self.mlp(modulate(self.norm2_x(x), shift_mlp_x, scale_mlp_x))
+            cond_tokens = cond_tokens + gate_mlp_c.unsqueeze(1) * self.mlp_cond(modulate(self.norm2_c(cond_tokens), shift_mlp_c, scale_mlp_c))
+        else:
+            # When cross/joint attention is disabled, keep cond_tokens unchanged
+            x = x + gate_mlp_x.unsqueeze(1) * self.mlp(modulate(self.norm2_x(x), shift_mlp_x, scale_mlp_x))
 
-        return x
+        return x, cond_tokens
 
 
 class FinalLayer(nn.Module):
@@ -377,9 +393,9 @@ class DiT(nn.Module):
         
         for block in self.blocks:
             if self.gradient_checkpointing:
-                x = cp.checkpoint(block, x, t, cond_tokens, use_reentrant=False)
+                x, cond_tokens = cp.checkpoint(block, x, t, cond_tokens, use_reentrant=False)
             else:
-                x = block(x, t, cond_tokens)  # cross-attn injects condition each layer
+                x, cond_tokens = block(x, t, cond_tokens)  # joint attention injects/updates condition each layer
                 
         x = self.final_layer(x, t)         # (N, T, out_channels)
         x = self.unpatchify(x)             # (N, out_channels, T)
@@ -404,6 +420,7 @@ class DiT(nn.Module):
         uncond_half = self.hic_encoder.null_tokens(half, dtype=cond_half.dtype, device=cond_half.device)
         
         combined_cond = torch.cat([cond_half, uncond_half], dim=0)
+        cond_tokens = combined_cond
 
         # expect combined_x as (N, T, C) and use Linear embedder
         x = self.x_embedder(combined_x)  # (N, T, D)
@@ -411,7 +428,7 @@ class DiT(nn.Module):
         t = self.t_embedder(combined_t)
 
         for block in self.blocks:
-            x = block(x, t, combined_cond)
+            x, cond_tokens = block(x, t, cond_tokens)
 
         model_out = self.final_layer(x, t)      # (N, T, out_channels)
         model_out = self.unpatchify(model_out)  # (N, out_channels, T)

@@ -136,11 +136,12 @@ def main():
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=2e-5)
-    parser.add_argument("--latent_scale", type=float, default=1.335256)
-    parser.add_argument("--sample_steps", type=int, default=50)
+    parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
+    parser.add_argument("--sample_steps", type=int, default=25, help="RF sampling steps")
+    parser.add_argument("--use_global_cond", type=bool, default=True, help="Whether CrossDiT uses global conditioning")
     parser.add_argument("--save_dir", type=str, default="checkpoints/dit")
     parser.add_argument("--vae_ckpt", type=str, default="checkpoints/vae/epoch_040.pt")
-    parser.add_argument("--run_name", type=str, default="diffbacchrom-dit")
+    parser.add_argument("--run_name", type=str, default="rf_dit_structure")
     args = parser.parse_args()
 
     os.makedirs(args.save_dir, exist_ok=True)
@@ -181,7 +182,9 @@ def main():
     for p in vae.parameters():
         p.requires_grad_(False)
 
-    model = DiT_models["DiT-L"](input_size=seq_len, in_channels=vae.z_channels).to(device)
+    model = DiT_models["DiT-L"](input_size=seq_len, 
+                                in_channels=vae.z_channels, 
+                                use_global_cond=args.use_global_cond).to(device)
 
     # report parameter counts before training
     vae_params = count_params(vae, trainable_only=False)

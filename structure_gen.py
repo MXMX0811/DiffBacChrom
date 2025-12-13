@@ -66,7 +66,8 @@ def main():
     parser.add_argument("--hic_path", type=str, default="data/train/Pair_10/Pair_10_sim_hic_freq.tsv", help="Path to Hi-C tsv (e.g., data/train/Pair_X/Pair_X_sim_hic_freq.tsv)")
     parser.add_argument("--dit_ckpt", type=str, default="checkpoints/dit/epoch_016.pt", help="DiT checkpoint path")
     parser.add_argument("--vae_ckpt", type=str, default="checkpoints/vae/epoch_040.pt", help="VAE checkpoint path")
-    parser.add_argument("--sample_steps", type=int, default=50, help="RF sampling steps")
+    parser.add_argument("--sample_steps", type=int, default=25, help="RF sampling steps")
+    parser.add_argument("--use_global_cond", type=bool, default=True, help="Whether CrossDiT uses global conditioning")
     parser.add_argument("--num_samples", type=int, default=500, help="Number of sequences to generate")
     parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
     parser.add_argument("--output_root", type=str, default="outputs/dit_samples", help="Output root directory")
@@ -88,7 +89,9 @@ def main():
     for p in vae.parameters():
         p.requires_grad_(False)
 
-    dit = DiT_models["DiT-L"](input_size=seq_len, in_channels=vae.z_channels).to(device)
+    dit = DiT_models["DiT-L"](input_size=seq_len, 
+                              in_channels=vae.z_channels, 
+                              use_global_cond=args.use_global_cond).to(device)
     ckpt = torch.load(args.dit_ckpt, map_location="cpu")
     dit.load_state_dict(ckpt["model"])
     dit.eval()

@@ -195,13 +195,13 @@ class DiTBlock(nn.Module):
     """
     DiT block with:
       - Self-attention
-      - Cross-attention (optional)
+      - Cross-attention condition
+      - Global condition (optional)
       - MLP
       - adaLN-zero modulation
     """
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, use_cross_attn: bool = True):
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0):
         super().__init__()
-        self.use_cross_attn = use_cross_attn
         
         self.norm1 = nn.LayerNorm(hidden_size, eps=1e-6)
         self.self_attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True)
@@ -279,9 +279,10 @@ class DiT(nn.Module):
         depth=28,
         num_heads=16,
         mlp_ratio=4.0,
+        use_global_cond: bool = True,
         cross_attn_interval: int | None = 1,   # use cross-attn every N layers
-        learn_sigma=True,
-        gradient_checkpointing=True,   # allow gradient checkpointing to save memory
+        learn_sigma: bool = True,
+        gradient_checkpointing: bool = True,   # allow gradient checkpointing to save memory
     ):
         super().__init__()
         self.gradient_checkpointing = gradient_checkpointing
@@ -289,6 +290,7 @@ class DiT(nn.Module):
         self.in_channels = in_channels
         self.out_channels = in_channels * 2 if learn_sigma else in_channels
         self.num_heads = num_heads
+        self.use_global_cond = use_global_cond
 
         # 1D sequence embedder
         self.x_embedder = nn.Linear(in_channels, hidden_size, bias=True)
@@ -368,12 +370,15 @@ class DiT(nn.Module):
         t: (N,) tensor of diffusion timesteps
         H: tensor hic matrices (N, C_hic, W, W)
         """
-        cond_tokens = self.hic_encoder(H, train=self.training) 
+        cond_tokens = self.hic_encoder(H, train=self.training)
 
         # expect x as (N, T, C) and use Linear embedder
         x = self.x_embedder(x)  # (N, T, D)
         x = x + self.pos_embed.to(x.dtype)  # (N, T, D)
         t = self.t_embedder(t)             # (N, D)
+        
+        if self.use_global_cond:
+            t += cond_tokens.mean(dim=1)  
         
         for block in self.blocks:
             if self.gradient_checkpointing:
@@ -409,6 +414,11 @@ class DiT(nn.Module):
         x = self.x_embedder(combined_x)  # (N, T, D)
         x = x + self.pos_embed.to(x.dtype)
         t = self.t_embedder(combined_t)
+        
+        if self.use_global_cond:
+            y_cond = cond_half.mean(dim=1)                 # (half, D)
+            y_uncond = uncond_half.mean(dim=1)
+            t = torch.cat([t[:half] + y_cond, t[half:] + y_uncond], dim=0)
 
         for block in self.blocks:
             x = block(x, t, combined_cond)
