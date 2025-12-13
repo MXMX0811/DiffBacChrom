@@ -370,73 +370,92 @@ class DiT(nn.Module):
         imgs = x.permute(0, 2, 1)  # (N, C, T)
         return imgs
 
-    def forward(self, x, t, H, cfg_scale: float = 1.0, return_full_batch: bool = True):
+    def forward(self, x, t, H, cfg_scale: float = 1.0):
         """
-        If cfg_scale == 1.0 or self.training: normal forward.
-        If cfg_scale != 1.0 and not self.training: do CFG by batch-doubling.
-        return_full_batch controls whether to return N or N/2 samples in CFG mode.
+        Unified forward for SD3-style MM-DiT.
+
+        Args:
+            x: (N, T, C_in)
+            t: (N,)
+            H: (N, C_hic, W, W)
+            cfg_scale: guidance scale (1.0 = no CFG)
+
+        Returns:
+            (N, out_channels, T)
         """
-        if (cfg_scale == 1.0) or self.training:
-            # Normal path (training or no guidance)
+
+        # --------------------------------------------------
+        # Case 1: training OR no guidance
+        # --------------------------------------------------
+        if self.training or cfg_scale == 1.0:
+            # Hi-C tokens (with dropout during training)
             cond_tokens = self.hic_encoder(H, train=self.training)
 
+            # latent embedding
             x = self.x_embedder(x)
             x = x + self.pos_embed.to(x.dtype)
+
+            # timestep embedding
             t_emb = self.t_embedder(t)
 
-            if self.use_global_cond:
-                t_emb = t_emb + cond_tokens.mean(dim=1)
-
+            # joint MM-DiT blocks
             for block in self.blocks:
-                if self.gradient_checkpointing:
-                    x = cp.checkpoint(block, x, t_emb, cond_tokens, use_reentrant=False)
+                if self.gradient_checkpointing and self.training:
+                    x, cond_tokens = cp.checkpoint(
+                        block, x, t_emb, cond_tokens, use_reentrant=False
+                    )
                 else:
-                    x = block(x, t_emb, cond_tokens)
+                    x, cond_tokens = block(x, t_emb, cond_tokens)
 
             x = self.final_layer(x, t_emb)
-            x = self.unpatchify(x)
-            return x
+            return self.unpatchify(x)
 
-        # CFG path (inference only)
+        # --------------------------------------------------
+        # Case 2: CFG inference (SD3-style joint MM-DiT)
+        # --------------------------------------------------
         N = x.shape[0]
-        assert N % 2 == 0
+        assert N % 2 == 0, "CFG requires even batch size"
         half = N // 2
 
+        # split inputs
         x_half = x[:half]
         t_half = t[:half]
         H_half = H[:half]
 
-        combined_x = torch.cat([x_half, x_half], dim=0)
-        combined_t = torch.cat([t_half, t_half], dim=0)
+        # duplicate latents and timesteps
+        x = torch.cat([x_half, x_half], dim=0)
+        t = torch.cat([t_half, t_half], dim=0)
 
-        cond_half = self.hic_encoder.encode(H_half)
-        uncond_half = self.hic_encoder.null_tokens(
-            half, dtype=cond_half.dtype, device=cond_half.device
+        # conditional / unconditional Hi-C tokens
+        cond_tokens = self.hic_encoder.encode(H_half)
+        uncond_tokens = self.hic_encoder.null_tokens(
+            half, dtype=cond_tokens.dtype, device=cond_tokens.device
         )
-        combined_cond = torch.cat([cond_half, uncond_half], dim=0)
+        cond_tokens = torch.cat([cond_tokens, uncond_tokens], dim=0)
 
-        x = self.x_embedder(combined_x)
+        # latent embedding
+        x = self.x_embedder(x)
         x = x + self.pos_embed.to(x.dtype)
-        t_emb = self.t_embedder(combined_t)
 
-        if self.use_global_cond:
-            y_cond = cond_half.mean(dim=1)
-            y_uncond = uncond_half.mean(dim=1)
-            t_emb = torch.cat([t_emb[:half] + y_cond, t_emb[half:] + y_uncond], dim=0)
+        # timestep embedding
+        t_emb = self.t_embedder(t)
 
+        # joint MM-DiT blocks (cond_tokens WILL be updated)
         for block in self.blocks:
-            # 也可以在 CFG path 里用 checkpoint，但会更慢
-            x = block(x, t_emb, combined_cond)
+            x, cond_tokens = block(x, t_emb, cond_tokens)
 
-        model_out = self.final_layer(x, t_emb)
-        model_out = self.unpatchify(model_out)
+        # output
+        x = self.final_layer(x, t_emb)
+        x = self.unpatchify(x)
 
-        cond_out, uncond_out = torch.split(model_out, half, dim=0)
-        guided = uncond_out + cfg_scale * (cond_out - uncond_out)
+        # split cond / uncond outputs
+        x_cond, x_uncond = torch.split(x, half, dim=0)
 
-        if return_full_batch:
-            return torch.cat([guided, guided], dim=0)
-        return guided
+        # classifier-free guidance
+        x_guided = x_uncond + cfg_scale * (x_cond - x_uncond)
+
+        # return full batch (SD-style sampler compatibility)
+        return torch.cat([x_guided, x_guided], dim=0)
 
 
 #################################################################################
