@@ -137,7 +137,7 @@ def main():
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
-    parser.add_argument("--sample_steps", type=int, default=25, help="RF sampling steps")
+    parser.add_argument("--sample_steps", type=int, default=50, help="RF sampling steps")
     parser.add_argument("--use_global_cond", type=bool, default=True, help="Whether CrossDiT uses global conditioning")
     parser.add_argument("--save_dir", type=str, default="checkpoints/dit")
     parser.add_argument("--vae_ckpt", type=str, default="checkpoints/vae/epoch_040.pt")

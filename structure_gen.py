@@ -66,7 +66,7 @@ def main():
     parser.add_argument("--hic_path", type=str, default="data/train/Pair_10/Pair_10_sim_hic_freq.tsv", help="Path to Hi-C tsv (e.g., data/train/Pair_X/Pair_X_sim_hic_freq.tsv)")
     parser.add_argument("--dit_ckpt", type=str, default="checkpoints/dit/epoch_016.pt", help="DiT checkpoint path")
     parser.add_argument("--vae_ckpt", type=str, default="checkpoints/vae/epoch_040.pt", help="VAE checkpoint path")
-    parser.add_argument("--sample_steps", type=int, default=25, help="RF sampling steps")
+    parser.add_argument("--sample_steps", type=int, default=50, help="RF sampling steps")
     parser.add_argument("--use_global_cond", type=bool, default=True, help="Whether CrossDiT uses global conditioning")
     parser.add_argument("--num_samples", type=int, default=500, help="Number of sequences to generate")
     parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
