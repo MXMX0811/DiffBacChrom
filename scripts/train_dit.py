@@ -16,10 +16,10 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from diffbacchrom.crossdit import DiT_models as CrossDiT_models  # noqa: E402
-from diffbacchrom.mmdit import DiT_models as MMDiT_models  # noqa: E402
-from diffbacchrom.vae import StructureAutoencoderKL1D  # noqa: E402
-from scripts.dataloader import HiCStructureDataset, collate_fn  # noqa: E402
+from diffbacchrom.crossdit import DiT_models as CrossDiT_models
+from diffbacchrom.mmdit import DiT_models as MMDiT_models
+from diffbacchrom.vae import StructureAutoencoderKL1D
+from scripts.dataloader import HiCStructureDataset, collate_fn
 
 
 class RF:

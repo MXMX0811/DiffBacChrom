@@ -16,8 +16,8 @@ if PROJECT_ROOT not in sys.path:
 
 from diffbacchrom.crossdit import DiT_models as CrossDiT_models
 from diffbacchrom.mmdit import DiT_models as MMDiT_models
-from diffbacchrom.vae import StructureAutoencoderKL1D  # noqa: E402
-from scripts.train_dit import RF  # noqa: E402
+from diffbacchrom.vae import StructureAutoencoderKL1D
+from scripts.train_dit import RF
 
 
 def load_hic_matrix(hic_path: str) -> torch.Tensor:
