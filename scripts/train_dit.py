@@ -48,7 +48,7 @@ class RF:
         return batchwise_mse.mean()
 
     @torch.no_grad()
-    def sample(self, hic: torch.Tensor, sample_steps: int, shape: torch.Size):
+    def sample(self, hic: torch.Tensor, sample_steps: int, shape: torch.Size, cfg_scale: float = 1.0):
         """
         hic: (B, 1, W, W)
         shape: (B, W, C)
@@ -60,7 +60,7 @@ class RF:
 
         for i in range(sample_steps, 0, -1):
             t = torch.full((b,), i / sample_steps, device=hic.device)
-            vc = self.model(z, t, hic)
+            vc = self.model.forward_with_cfg(z, t, hic, cfg_scale=cfg_scale)
             B, C, T = vc.shape
             C_half = C // 2
             vc, _ = torch.split(vc, C_half, dim=1)
