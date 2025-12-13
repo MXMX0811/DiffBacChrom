@@ -150,7 +150,9 @@ def main():
     if args.cfg_scale is None:
         args.cfg_scale = 1.5 if args.model == "MMDiT" else 1.0
     if args.model != "CrossDiT":
-        assert not args.use_global_cond, "--use_global_cond is only supported when model=CrossDiT"
+        if args.use_global_cond:
+            print("Warning: --use_global_cond is only supported when model=CrossDiT; disabled.")
+            args.use_global_cond = False
 
     if args.save_dir is None:
         args.save_dir = os.path.join("checkpoints", "dit", args.model)
