@@ -14,7 +14,8 @@ PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from diffbacchrom.dit import DiT_models  # noqa: E402
+from diffbacchrom.crossdit import DiT_models as CrossDiT_models
+from diffbacchrom.mmdit import DiT_models as MMDiT_models
 from diffbacchrom.vae import StructureAutoencoderKL1D  # noqa: E402
 from scripts.train_dit import RF  # noqa: E402
 
@@ -64,14 +65,27 @@ def apply_mask_threshold(struct: torch.Tensor) -> torch.Tensor:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--hic_path", type=str, default="data/train/Pair_10/Pair_10_sim_hic_freq.tsv", help="Path to Hi-C tsv (e.g., data/train/Pair_X/Pair_X_sim_hic_freq.tsv)")
-    parser.add_argument("--dit_ckpt", type=str, default="checkpoints/dit/epoch_016.pt", help="DiT checkpoint path")
+    parser.add_argument("--dit_ckpt", type=str, default=None, help="DiT checkpoint path")
     parser.add_argument("--vae_ckpt", type=str, default="checkpoints/vae/epoch_040.pt", help="VAE checkpoint path")
     parser.add_argument("--sample_steps", type=int, default=50, help="RF sampling steps")
+    parser.add_argument("--model", type=str, default="MMDiT", choices=["CrossDiT", "MMDiT"], help="Select backbone model")
+    parser.add_argument(
+        "--size",
+        type=lambda s: s.upper(),
+        default="B",
+        choices=["S", "B", "L", "XL"],
+        help="DiT model size (S/B/L/XL)",
+    )
     parser.add_argument("--cfg_scale", type=float, default=1.0, help="Classifier-free guidance scale for inference")
     parser.add_argument("--num_samples", type=int, default=500, help="Number of sequences to generate")
     parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
     parser.add_argument("--output_root", type=str, default="outputs/dit_samples", help="Output root directory")
     args = parser.parse_args()
+    
+    if args.cfg_scale is None:
+        args.cfg_scale = 1.5 if args.model == "MMDiT" else 1.0
+    if args.dit_ckpt is None:
+        args.dit_ckpt = os.path.join("checkpoints", "dit", args.model + args.size, "epoch_016.pt")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -89,10 +103,27 @@ def main():
     for p in vae.parameters():
         p.requires_grad_(False)
 
-    dit = DiT_models["DiT-L"](
-        input_size=seq_len, 
-        in_channels=vae.z_channels
-    ).to(device)
+    dit_size_key = f"DiT-{args.size}"
+    if args.model == "CrossDiT":
+        model_fn = CrossDiT_models[dit_size_key]
+        model_kwargs = {
+            "input_size": seq_len,
+            "in_channels": vae.z_channels,
+            "use_global_cond": args.use_global_cond,
+            "gradient_checkpointing": args.grad_cp,
+        }
+    elif args.model == "MMDiT":
+        model_fn = MMDiT_models[dit_size_key]
+        model_kwargs = {
+            "input_size": seq_len,
+            "in_channels": vae.z_channels,
+            "gradient_checkpointing": args.grad_cp,
+        }
+    else:
+        raise ValueError(f"Unsupported model type: {args.model}")
+
+    dit = model_fn(**model_kwargs).to(device)
+        
     ckpt = torch.load(args.dit_ckpt, map_location="cpu")
     dit.load_state_dict(ckpt["model"])
     dit.eval()
