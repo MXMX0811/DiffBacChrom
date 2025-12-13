@@ -199,9 +199,8 @@ class DiTBlock(nn.Module):
       - Modality-specific MLPs
       - adaLN-zero modulation
     """
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, use_cross_attn: bool = True):
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0):
         super().__init__()
-        self.use_cross_attn = use_cross_attn
         
         self.norm1 = nn.LayerNorm(hidden_size, eps=1e-6)
         self.self_attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True)
@@ -243,22 +242,18 @@ class DiTBlock(nn.Module):
 
         x = x + gate_self.unsqueeze(1) * self.self_attn(modulate(self.norm1(x), shift_self, scale_self))
 
-        if self.use_cross_attn:
-            # Joint attention over concatenated latent and condition tokens
-            x_mod = modulate(self.norm_joint_x(x), shift_joint_x, scale_joint_x)
-            cond_mod = modulate(self.norm_joint_c(cond_tokens), shift_joint_c, scale_joint_c)
-            joint = torch.cat([x_mod, cond_mod], dim=1)
-            joint_out = self.joint_attn(joint)
-            x_out, cond_out = joint_out.split([x.shape[1], cond_tokens.shape[1]], dim=1)
-            x = x + gate_joint_x.unsqueeze(1) * x_out
-            cond_tokens = cond_tokens + gate_joint_c.unsqueeze(1) * cond_out
+        # Joint attention over concatenated latent and condition tokens
+        x_mod = modulate(self.norm_joint_x(x), shift_joint_x, scale_joint_x)
+        cond_mod = modulate(self.norm_joint_c(cond_tokens), shift_joint_c, scale_joint_c)
+        joint = torch.cat([x_mod, cond_mod], dim=1)
+        joint_out = self.joint_attn(joint)
+        x_out, cond_out = joint_out.split([x.shape[1], cond_tokens.shape[1]], dim=1)
+        x = x + gate_joint_x.unsqueeze(1) * x_out
+        cond_tokens = cond_tokens + gate_joint_c.unsqueeze(1) * cond_out
 
-            # Per-modality MLP updates
-            x = x + gate_mlp_x.unsqueeze(1) * self.mlp(modulate(self.norm2_x(x), shift_mlp_x, scale_mlp_x))
-            cond_tokens = cond_tokens + gate_mlp_c.unsqueeze(1) * self.mlp_cond(modulate(self.norm2_c(cond_tokens), shift_mlp_c, scale_mlp_c))
-        else:
-            # When cross/joint attention is disabled, keep cond_tokens unchanged
-            x = x + gate_mlp_x.unsqueeze(1) * self.mlp(modulate(self.norm2_x(x), shift_mlp_x, scale_mlp_x))
+        # Per-modality MLP updates
+        x = x + gate_mlp_x.unsqueeze(1) * self.mlp(modulate(self.norm2_x(x), shift_mlp_x, scale_mlp_x))
+        cond_tokens = cond_tokens + gate_mlp_c.unsqueeze(1) * self.mlp_cond(modulate(self.norm2_c(cond_tokens), shift_mlp_c, scale_mlp_c))
 
         return x, cond_tokens
 
@@ -295,7 +290,6 @@ class DiT(nn.Module):
         depth=28,
         num_heads=16,
         mlp_ratio=4.0,
-        cross_attn_interval: int | None = 1,   # use cross-attn every N layers
         learn_sigma=True,
         gradient_checkpointing=True,   # allow gradient checkpointing to save memory
     ):
@@ -321,9 +315,8 @@ class DiT(nn.Module):
 
         self.blocks = nn.ModuleList()
         for i in range(depth):
-            use_cross = (cross_attn_interval is not None) and ((i + 1) % cross_attn_interval == 0)
             self.blocks.append(
-                DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio, use_cross_attn=use_cross)
+                DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio)
             )
             
         self.final_layer = FinalLayer(hidden_size, self.out_channels)

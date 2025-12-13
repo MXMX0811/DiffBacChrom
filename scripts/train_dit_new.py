@@ -139,9 +139,17 @@ def main():
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
     parser.add_argument("--sample_steps", type=int, default=50, help="RF sampling steps")
-    parser.add_argument("--model", type=str, default="CrossDiT", choices=["CrossDiT", "MMDiT"], help="Select backbone model")
+    parser.add_argument("--model", type=str, default="MMDiT", choices=["CrossDiT", "MMDiT"], help="Select backbone model")
+    parser.add_argument(
+        "--size",
+        type=lambda s: s.upper(),
+        default="B",
+        choices=["S", "B", "L", "XL"],
+        help="DiT model size (S/B/L/XL)",
+    )
     parser.add_argument("--use_global_cond", type=bool, default=True, help="Whether CrossDiT uses global conditioning (CrossDiT only)")
     parser.add_argument("--cfg_scale", type=float, default=None, help="Classifier-free guidance scale for inference")
+    parser.add_argument("--grad_cp", type=bool, default=True, help="Use gradient checkpointing to save memory")
     parser.add_argument("--save_dir", type=str, default=None, help="Checkpoint directory (default: checkpoints/dit/<model>)")
     parser.add_argument("--vae_ckpt", type=str, default="checkpoints/vae/epoch_040.pt")
     parser.add_argument("--run_name", type=str, default="rf_dit_structure")
@@ -155,7 +163,7 @@ def main():
             args.use_global_cond = False
 
     if args.save_dir is None:
-        args.save_dir = os.path.join("checkpoints", "dit", args.model)
+        args.save_dir = os.path.join("checkpoints", "dit", args.model + args.size)
         
     os.makedirs(args.save_dir, exist_ok=True)
 
@@ -195,18 +203,21 @@ def main():
     for p in vae.parameters():
         p.requires_grad_(False)
 
+    dit_size_key = f"DiT-{args.size}"
     if args.model == "CrossDiT":
-        model_fn = CrossDiT_models["DiT-L"]
+        model_fn = CrossDiT_models[dit_size_key]
         model_kwargs = {
             "input_size": seq_len,
             "in_channels": vae.z_channels,
             "use_global_cond": args.use_global_cond,
+            "gradient_checkpointing": args.grad_cp,
         }
     elif args.model == "MMDiT":
-        model_fn = MMDiT_models["DiT-L"]
+        model_fn = MMDiT_models[dit_size_key]
         model_kwargs = {
             "input_size": seq_len,
             "in_channels": vae.z_channels,
+            "gradient_checkpointing": args.grad_cp,
         }
     else:
         raise ValueError(f"Unsupported model type: {args.model}")

@@ -280,7 +280,6 @@ class DiT(nn.Module):
         num_heads=16,
         mlp_ratio=4.0,
         use_global_cond: bool = True,
-        cross_attn_interval: int | None = 1,   # use cross-attn every N layers
         learn_sigma: bool = True,
         gradient_checkpointing: bool = True,   # allow gradient checkpointing to save memory
     ):
@@ -307,9 +306,8 @@ class DiT(nn.Module):
 
         self.blocks = nn.ModuleList()
         for i in range(depth):
-            use_cross = (cross_attn_interval is not None) and ((i + 1) % cross_attn_interval == 0)
             self.blocks.append(
-                DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio, use_cross_attn=use_cross)
+                DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio)
             )
             
         self.final_layer = FinalLayer(hidden_size, self.out_channels)
