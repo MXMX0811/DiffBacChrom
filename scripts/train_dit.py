@@ -16,7 +16,8 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from diffbacchrom.dit import DiT_models  # noqa: E402
+from diffbacchrom.crossdit import DiT_models as CrossDiT_models  # noqa: E402
+from diffbacchrom.mmdit import DiT_models as MMDiT_models  # noqa: E402
 from diffbacchrom.vae import StructureAutoencoderKL1D  # noqa: E402
 from scripts.dataloader import HiCStructureDataset, collate_fn  # noqa: E402
 
@@ -60,7 +61,7 @@ class RF:
 
         for i in range(sample_steps, 0, -1):
             t = torch.full((b,), i / sample_steps, device=hic.device)
-            vc = self.model.forward_with_cfg(z, t, hic, cfg_scale=cfg_scale)
+            vc = self.model(z, t, hic, cfg_scale=cfg_scale)
             B, C, T = vc.shape
             C_half = C // 2
             vc, _ = torch.split(vc, C_half, dim=1)
@@ -138,13 +139,32 @@ def main():
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
     parser.add_argument("--sample_steps", type=int, default=50, help="RF sampling steps")
-    parser.add_argument("--use_global_cond", type=bool, default=True, help="Whether CrossDiT uses global conditioning")
-    parser.add_argument("--cfg_scale", type=float, default=1.0, help="Classifier-free guidance scale for inference")
-    parser.add_argument("--save_dir", type=str, default="checkpoints/dit")
+    parser.add_argument("--model", type=str, default="MMDiT", choices=["CrossDiT", "MMDiT"], help="Select backbone model")
+    parser.add_argument(
+        "--size",
+        type=lambda s: s.upper(),
+        default="B",
+        choices=["S", "B", "L", "XL"],
+        help="DiT model size (S/B/L/XL)",
+    )
+    parser.add_argument("--use_global_cond", type=bool, default=True, help="Whether CrossDiT uses global conditioning (CrossDiT only)")
+    parser.add_argument("--cfg_scale", type=float, default=None, help="Classifier-free guidance scale for inference")
+    parser.add_argument("--grad_cp", type=bool, default=True, help="Use gradient checkpointing to save memory")
+    parser.add_argument("--save_dir", type=str, default=None, help="Checkpoint directory (default: checkpoints/dit/<model>)")
     parser.add_argument("--vae_ckpt", type=str, default="checkpoints/vae/epoch_040.pt")
     parser.add_argument("--run_name", type=str, default="rf_dit_structure")
     args = parser.parse_args()
 
+    if args.cfg_scale is None:
+        args.cfg_scale = 1.5 if args.model == "MMDiT" else 1.0
+    if args.model != "CrossDiT":
+        if args.use_global_cond:
+            print("Warning: --use_global_cond is only supported when model=CrossDiT; disabled.")
+            args.use_global_cond = False
+
+    if args.save_dir is None:
+        args.save_dir = os.path.join("checkpoints", "dit", args.model + args.size)
+        
     os.makedirs(args.save_dir, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -183,11 +203,26 @@ def main():
     for p in vae.parameters():
         p.requires_grad_(False)
 
-    model = DiT_models["DiT-L"](
-        input_size=seq_len, 
-        in_channels=vae.z_channels, 
-        use_global_cond=args.use_global_cond
-    ).to(device)
+    dit_size_key = f"DiT-{args.size}"
+    if args.model == "CrossDiT":
+        model_fn = CrossDiT_models[dit_size_key]
+        model_kwargs = {
+            "input_size": seq_len,
+            "in_channels": vae.z_channels,
+            "use_global_cond": args.use_global_cond,
+            "gradient_checkpointing": args.grad_cp,
+        }
+    elif args.model == "MMDiT":
+        model_fn = MMDiT_models[dit_size_key]
+        model_kwargs = {
+            "input_size": seq_len,
+            "in_channels": vae.z_channels,
+            "gradient_checkpointing": args.grad_cp,
+        }
+    else:
+        raise ValueError(f"Unsupported model type: {args.model}")
+
+    model = model_fn(**model_kwargs).to(device)
 
     # report parameter counts before training
     vae_params = count_params(vae, trainable_only=False)
