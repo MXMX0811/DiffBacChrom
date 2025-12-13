@@ -67,7 +67,6 @@ def main():
     parser.add_argument("--dit_ckpt", type=str, default="checkpoints/dit/epoch_016.pt", help="DiT checkpoint path")
     parser.add_argument("--vae_ckpt", type=str, default="checkpoints/vae/epoch_040.pt", help="VAE checkpoint path")
     parser.add_argument("--sample_steps", type=int, default=50, help="RF sampling steps")
-    parser.add_argument("--use_global_cond", type=bool, default=True, help="Whether CrossDiT uses global conditioning")
     parser.add_argument("--cfg_scale", type=float, default=1.0, help="Classifier-free guidance scale for inference")
     parser.add_argument("--num_samples", type=int, default=500, help="Number of sequences to generate")
     parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
@@ -92,8 +91,7 @@ def main():
 
     dit = DiT_models["DiT-L"](
         input_size=seq_len, 
-        in_channels=vae.z_channels, 
-        use_global_cond=args.use_global_cond
+        in_channels=vae.z_channels
     ).to(device)
     ckpt = torch.load(args.dit_ckpt, map_location="cpu")
     dit.load_state_dict(ckpt["model"])
