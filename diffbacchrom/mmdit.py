@@ -370,34 +370,34 @@ class DiT(nn.Module):
         imgs = x.permute(0, 2, 1)  # (N, C, T)
         return imgs
 
-    def forward(self, x, t, H):
+    def forward(self, x, t, H, cfg_scale: float = 1.0, return_full_batch: bool = True):
         """
-        Forward pass of DiT.
-        x: (N, T, C_in) tensor of sequence inputs (e.g., per-token latent representations)
-        t: (N,) tensor of diffusion timesteps
-        H: tensor hic matrices (N, C_hic, W, W)
+        If cfg_scale == 1.0 or self.training: normal forward.
+        If cfg_scale != 1.0 and not self.training: do CFG by batch-doubling.
+        return_full_batch controls whether to return N or N/2 samples in CFG mode.
         """
-        cond_tokens = self.hic_encoder(H, train=self.training) 
+        if (cfg_scale == 1.0) or self.training:
+            # Normal path (training or no guidance)
+            cond_tokens = self.hic_encoder(H, train=self.training)
 
-        # expect x as (N, T, C) and use Linear embedder
-        x = self.x_embedder(x)  # (N, T, D)
-        x = x + self.pos_embed.to(x.dtype)  # (N, T, D)
-        t = self.t_embedder(t)             # (N, D)
-        
-        for block in self.blocks:
-            if self.gradient_checkpointing:
-                x, cond_tokens = cp.checkpoint(block, x, t, cond_tokens, use_reentrant=False)
-            else:
-                x, cond_tokens = block(x, t, cond_tokens)  # joint attention injects/updates condition each layer
-                
-        x = self.final_layer(x, t)         # (N, T, out_channels)
-        x = self.unpatchify(x)             # (N, out_channels, T)
-        return x
+            x = self.x_embedder(x)
+            x = x + self.pos_embed.to(x.dtype)
+            t_emb = self.t_embedder(t)
 
-    def forward_with_cfg(self, x, t, H, cfg_scale):
-        """
-        CFG forward pass of DiT inference on sequence inputs.
-        """
+            if self.use_global_cond:
+                t_emb = t_emb + cond_tokens.mean(dim=1)
+
+            for block in self.blocks:
+                if self.gradient_checkpointing:
+                    x = cp.checkpoint(block, x, t_emb, cond_tokens, use_reentrant=False)
+                else:
+                    x = block(x, t_emb, cond_tokens)
+
+            x = self.final_layer(x, t_emb)
+            x = self.unpatchify(x)
+            return x
+
+        # CFG path (inference only)
         N = x.shape[0]
         assert N % 2 == 0
         half = N // 2
@@ -410,28 +410,33 @@ class DiT(nn.Module):
         combined_t = torch.cat([t_half, t_half], dim=0)
 
         cond_half = self.hic_encoder.encode(H_half)
-        uncond_half = self.hic_encoder.null_tokens(half, dtype=cond_half.dtype, device=cond_half.device)
-        
+        uncond_half = self.hic_encoder.null_tokens(
+            half, dtype=cond_half.dtype, device=cond_half.device
+        )
         combined_cond = torch.cat([cond_half, uncond_half], dim=0)
-        cond_tokens = combined_cond
 
-        # expect combined_x as (N, T, C) and use Linear embedder
-        x = self.x_embedder(combined_x)  # (N, T, D)
+        x = self.x_embedder(combined_x)
         x = x + self.pos_embed.to(x.dtype)
-        t = self.t_embedder(combined_t)
+        t_emb = self.t_embedder(combined_t)
+
+        if self.use_global_cond:
+            y_cond = cond_half.mean(dim=1)
+            y_uncond = uncond_half.mean(dim=1)
+            t_emb = torch.cat([t_emb[:half] + y_cond, t_emb[half:] + y_uncond], dim=0)
 
         for block in self.blocks:
-            x, cond_tokens = block(x, t, cond_tokens)
+            # 也可以在 CFG path 里用 checkpoint，但会更慢
+            x = block(x, t_emb, combined_cond)
 
-        model_out = self.final_layer(x, t)      # (N, T, out_channels)
-        model_out = self.unpatchify(model_out)  # (N, out_channels, T)
-        
-        cond_out, uncond_out = torch.split(model_out, half, dim=0)  # (N/2, out_ch, T)
+        model_out = self.final_layer(x, t_emb)
+        model_out = self.unpatchify(model_out)
 
-        guided_half = uncond_out + cfg_scale * (cond_out - uncond_out)  # (N/2, out_ch, T)
+        cond_out, uncond_out = torch.split(model_out, half, dim=0)
+        guided = uncond_out + cfg_scale * (cond_out - uncond_out)
 
-        out = torch.cat([guided_half, guided_half], dim=0)              # (N, out_ch, T)
-        return out
+        if return_full_batch:
+            return torch.cat([guided, guided], dim=0)
+        return guided
 
 
 #################################################################################

@@ -110,10 +110,10 @@ def main():
         cur_bs = min(batch_size, remaining)
         hic_batch = hic.repeat(cur_bs, 1, 1, 1)  # (cur_bs,1,W,W)
         sample_latent = rf.sample(
-                hic, 
-                sample_steps=args.sample_steps, 
-                shape=(hic.shape[0], seq_len, vae.z_channels), 
-                cfg_scale=args.cfg_scale
+            hic, 
+            sample_steps=args.sample_steps, 
+            shape=(hic.shape[0], seq_len, vae.z_channels), 
+            cfg_scale=args.cfg_scale
         )
         decoded = vae.decode(sample_latent / args.latent_scale)  # normalized space
         decoded = apply_mask_threshold(decoded)
