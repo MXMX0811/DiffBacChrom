@@ -153,6 +153,12 @@ def main():
     parser.add_argument("--save_dir", type=str, default=None, help="Checkpoint directory (default: checkpoints/dit/<model>)")
     parser.add_argument("--vae_ckpt", type=str, default="checkpoints/vae/epoch_040.pt")
     parser.add_argument("--run_name", type=str, default="rf_dit_structure")
+    parser.add_argument(
+        "--warmup_steps",
+        type=int,
+        default=1000,
+        help="Warmup steps for cosine scheduler (set 0 to keep constant learning rate)",
+    )
     args = parser.parse_args()
 
     if args.cfg_scale is None:
@@ -245,7 +251,13 @@ def main():
 
     rf = RF(model)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0)
-    scheduler = get_scheduler(optimizer, warmup_steps=1000, total_steps=args.epochs * len(dataloader))
+    total_steps = args.epochs * len(dataloader)
+    scheduler = None
+
+    if args.warmup_steps < 0:
+        raise ValueError("--warmup_steps must be non-negative")
+    if args.warmup_steps > 0:
+        scheduler = get_scheduler(optimizer, warmup_steps=args.warmup_steps, total_steps=total_steps)
 
     wandb.init(project="rf_dit_structure", name=args.run_name)
 
@@ -265,7 +277,8 @@ def main():
             loss.backward()
             torch.nn.utils.clip_grad_norm_(rf.model.parameters(), max_norm=1.0)
             optimizer.step()
-            scheduler.step()
+            if scheduler is not None:
+                scheduler.step()
 
             epoch_loss += loss.item()
             wandb.log(
