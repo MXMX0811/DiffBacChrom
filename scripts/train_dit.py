@@ -139,7 +139,7 @@ def main():
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
     parser.add_argument("--sample_steps", type=int, default=50, help="RF sampling steps")
-    parser.add_argument("--model", type=str, default="MMDiT", choices=["CrossDiT", "MMDiT"], help="Select backbone model")
+    parser.add_argument("--model", type=str, default="CrossDiT", choices=["CrossDiT", "MMDiT"], help="Select backbone model")
     parser.add_argument(
         "--size",
         type=lambda s: s.upper(),
@@ -284,7 +284,7 @@ def main():
         with torch.no_grad():
             vis_loader = DataLoader(
                 dataset,
-                batch_size=min(5, args.batch_size),
+                batch_size=10,
                 shuffle=True,
                 num_workers=0,
                 collate_fn=partial(collate_fn, train=False),
