@@ -298,7 +298,7 @@ class DiT(nn.Module):
 
         self.t_embedder = TimestepEmbedder(hidden_size)
         # pass input_size from DiT to HiC encoder so W is shared
-        self.hic_encoder = HiCEncoder(input_size=input_size, out_dim=hidden_size)
+        self.hic_encoder = HiCEncoder(input_size=input_size, out_dim=hidden_size, num_heads=num_heads)
         assert self.hic_encoder.proj_out.out_features == hidden_size
 
         # fixed sin-cos embedding:
