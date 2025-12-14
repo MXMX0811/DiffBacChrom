@@ -136,7 +136,7 @@ def main():
     parser.add_argument("--struct_dirname", type=str, default="structure")
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=8)
-    parser.add_argument("--lr", type=float, default=2e-5)
+    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
     parser.add_argument("--sample_steps", type=int, default=50, help="RF sampling steps")
     parser.add_argument("--model", type=str, default="CrossDiT", choices=["CrossDiT", "MMDiT"], help="Select backbone model")
@@ -156,7 +156,7 @@ def main():
     parser.add_argument(
         "--warmup_steps",
         type=int,
-        default=0,
+        default=1000,
         help="Warmup steps for cosine scheduler (set 0 to keep constant learning rate)",
     )
     args = parser.parse_args()
