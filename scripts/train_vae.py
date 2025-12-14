@@ -96,7 +96,7 @@ def main():
         pin_memory=True,
     )
 
-    model = StructureAutoencoderKL1D(in_channels=IN_CHANNELS).to(device)
+    model = StructureAutoencoderKL1D(in_channels=IN_CHANNELS, num_res_blocks=34).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
     bce_mask = torch.nn.BCEWithLogitsLoss().to(device)
 

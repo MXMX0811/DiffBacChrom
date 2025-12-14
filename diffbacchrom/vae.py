@@ -49,7 +49,7 @@ class ResBlock1D(nn.Module):
 # ------------------------------
 class StructureEncoder1D(nn.Module):
     """1D VAE Encoder"""
-    def __init__(self, in_channels=16, hidden_channels=128, num_res_blocks=4, z_channels=4, dropout=0.0):
+    def __init__(self, in_channels=16, hidden_channels=128, num_res_blocks=34, z_channels=4, dropout=0.0):
         super().__init__()
         
         self.conv_in = nn.Conv1d(in_channels, hidden_channels, 3, padding=1)
@@ -77,7 +77,7 @@ class StructureEncoder1D(nn.Module):
 # ------------------------------
 class StructureDecoder1D(nn.Module):
     """1D VAE Decoder"""
-    def __init__(self, out_channels=16, hidden_channels=128, num_res_blocks=4, z_channels=4, dropout=0.0):
+    def __init__(self, out_channels=16, hidden_channels=128, num_res_blocks=34, z_channels=4, dropout=0.0):
         super().__init__()
         
         self.conv_in = nn.Conv1d(z_channels, hidden_channels, 3, padding=1)
