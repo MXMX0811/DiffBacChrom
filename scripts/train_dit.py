@@ -156,14 +156,16 @@ def main():
     parser.add_argument(
         "--warmup_steps",
         type=int,
-        default=0,
+        default=None,
         help="Warmup steps for cosine scheduler (set 0 to keep constant learning rate)",
     )
     args = parser.parse_args()
 
     if args.cfg_scale is None:
         args.cfg_scale = 1.5 if args.model == "MMDiT" else 1.0
-    if args.model != "CrossDiT":
+    if args.warmup_steps is None:
+        args.warmup_steps = 1000 if args.model == "MMDiT" else 0
+    if args.model == "MMDiT":
         if args.use_global_cond:
             print("Warning: --use_global_cond is only supported when model=CrossDiT; disabled.")
             args.use_global_cond = False
