@@ -169,7 +169,7 @@ def main():
             args.use_global_cond = False
 
     if args.save_dir is None:
-        args.save_dir = os.path.join("checkpoints", "dit", args.model + args.size)
+        args.save_dir = os.path.join("checkpoints", "dit", args.model + "-" + args.size)
         
     os.makedirs(args.save_dir, exist_ok=True)
 
