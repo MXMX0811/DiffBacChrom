@@ -143,7 +143,7 @@ def main():
     parser.add_argument(
         "--size",
         type=lambda s: s.upper(),
-        default="B",
+        default="L",
         choices=["S", "B", "L", "XL"],
         help="DiT model size (S/B/L/XL)",
     )
@@ -156,7 +156,7 @@ def main():
     parser.add_argument(
         "--warmup_steps",
         type=int,
-        default=1000,
+        default=0,
         help="Warmup steps for cosine scheduler (set 0 to keep constant learning rate)",
     )
     args = parser.parse_args()
