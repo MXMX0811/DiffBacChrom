@@ -140,7 +140,7 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
     parser.add_argument("--sample_steps", type=int, default=50, help="RF sampling steps")
-    parser.add_argument("--model", type=str, default="CrossDiT", choices=["CrossDiT", "MMDiT", "MMDiTX"], help="Select backbone model")
+    parser.add_argument("--model", type=str, default="CrossDiT", choices=["CrossDiT", "JointAttDiT", "MMDiTX"], help="Select backbone model")
     parser.add_argument(
         "--size",
         type=lambda s: s.upper(),
@@ -225,7 +225,7 @@ def main():
             "use_global_cond": args.use_global_cond,
             "gradient_checkpointing": args.grad_cp,
         }
-    elif args.model == "MMDiT":
+    elif args.model == "JointAttDiT":
         model_fn = MMDiT_models[dit_size_key]
         model_kwargs = {
             "input_size": seq_len,
