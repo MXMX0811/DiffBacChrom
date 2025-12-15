@@ -18,6 +18,7 @@ if PROJECT_ROOT not in sys.path:
 
 from diffbacchrom.crossdit import DiT_models as CrossDiT_models
 from diffbacchrom.mmdit import DiT_models as MMDiT_models
+from diffbacchrom.mmditx import DiT_models as MMDiTX_models
 from diffbacchrom.vae import StructureAutoencoderKL1D
 from scripts.dataloader import HiCStructureDataset, collate_fn
 
@@ -139,11 +140,11 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
     parser.add_argument("--sample_steps", type=int, default=50, help="RF sampling steps")
-    parser.add_argument("--model", type=str, default="CrossDiT", choices=["CrossDiT", "MMDiT"], help="Select backbone model")
+    parser.add_argument("--model", type=str, default="CrossDiT", choices=["CrossDiT", "MMDiT", "MMDiTX"], help="Select backbone model")
     parser.add_argument(
         "--size",
         type=lambda s: s.upper(),
-        default="L",
+        default="S",
         choices=["S", "B", "L", "XL"],
         help="DiT model size (S/B/L/XL)",
     )
@@ -162,13 +163,17 @@ def main():
     args = parser.parse_args()
 
     if args.cfg_scale is None:
-        args.cfg_scale = 1.5 if args.model == "MMDiT" else 1.0
+        args.cfg_scale = 1.0 if args.model == "CrossDiT" else 1.5
     if args.warmup_steps is None:
-        args.warmup_steps = 1000 if args.model == "MMDiT" else 0
-    if args.model == "MMDiT":
+        args.warmup_steps = 0 if args.model == "CrossDiT" else 1000
+    if args.model != "CrossDiT":
         if args.use_global_cond:
             print("Warning: --use_global_cond is only supported when model=CrossDiT; disabled.")
             args.use_global_cond = False
+    if args.model == "MMDiTX":
+        if args.grad_cp:
+            print("Warning: --grad_cp is only supported when model=CrossDiT or MMDiT; disabled.")
+            args.grad_cp = False
 
     if args.save_dir is None:
         args.save_dir = os.path.join("checkpoints", "dit", args.model + "-" + args.size)
@@ -226,6 +231,12 @@ def main():
             "input_size": seq_len,
             "in_channels": vae.z_channels,
             "gradient_checkpointing": args.grad_cp,
+        }
+    elif args.model == "MMDiTX":
+        model_fn = MMDiTX_models[dit_size_key]
+        model_kwargs = {
+            "input_size": seq_len,
+            "in_channels": vae.z_channels,
         }
     else:
         raise ValueError(f"Unsupported model type: {args.model}")

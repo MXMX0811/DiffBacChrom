@@ -225,7 +225,7 @@ class DiTBlock(nn.Module):
             nn.Linear(hidden_size, 15 * hidden_size)
         )
 
-    def forward(self, x, c, cond_tokens):
+    def forward(self, x, t, cond_tokens):
         """
         x: (B, T_latent, D)
         c: (B, D)               # timestep embedding + global cond
@@ -235,25 +235,25 @@ class DiTBlock(nn.Module):
         (
             shift_self, scale_self, gate_self,
             shift_joint_x, scale_joint_x, gate_joint_x,
-            shift_joint_c, scale_joint_c, gate_joint_c,
+            shift_joint_t, scale_joint_t, gate_joint_t,
             shift_mlp_x, scale_mlp_x, gate_mlp_x,
-            shift_mlp_c, scale_mlp_c, gate_mlp_c,
-        ) = self.adaLN_modulation(c).chunk(15, dim=1)
+            shift_mlp_t, scale_mlp_t, gate_mlp_t,
+        ) = self.adaLN_modulation(t).chunk(15, dim=1)
 
         x = x + gate_self.unsqueeze(1) * self.self_attn(modulate(self.norm1(x), shift_self, scale_self))
 
         # Joint attention over concatenated latent and condition tokens
         x_mod = modulate(self.norm_joint_x(x), shift_joint_x, scale_joint_x)
-        cond_mod = modulate(self.norm_joint_c(cond_tokens), shift_joint_c, scale_joint_c)
+        cond_mod = modulate(self.norm_joint_c(cond_tokens), shift_joint_t, scale_joint_t)
         joint = torch.cat([x_mod, cond_mod], dim=1)
         joint_out = self.joint_attn(joint)
         x_out, cond_out = joint_out.split([x.shape[1], cond_tokens.shape[1]], dim=1)
         x = x + gate_joint_x.unsqueeze(1) * x_out
-        cond_tokens = cond_tokens + gate_joint_c.unsqueeze(1) * cond_out
+        cond_tokens = cond_tokens + gate_joint_t.unsqueeze(1) * cond_out
 
         # Per-modality MLP updates
         x = x + gate_mlp_x.unsqueeze(1) * self.mlp(modulate(self.norm2_x(x), shift_mlp_x, scale_mlp_x))
-        cond_tokens = cond_tokens + gate_mlp_c.unsqueeze(1) * self.mlp_cond(modulate(self.norm2_c(cond_tokens), shift_mlp_c, scale_mlp_c))
+        cond_tokens = cond_tokens + gate_mlp_t.unsqueeze(1) * self.mlp_cond(modulate(self.norm2_c(cond_tokens), shift_mlp_t, scale_mlp_t))
 
         return x, cond_tokens
 
