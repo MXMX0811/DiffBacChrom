@@ -24,6 +24,7 @@ training:
   scheduler: cosine  # warmup + cosine decay; null keeps constant lr
   num_workers: 4
   pin_memory: true
+  precision: fp32
 
 inference_preview:
   batch_size: 10

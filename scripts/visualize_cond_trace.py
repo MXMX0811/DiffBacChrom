@@ -9,6 +9,7 @@ matplotlib.use("Agg")  # headless-safe
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from torch import amp
 from sklearn.manifold import TSNE
 from torch.utils.data import DataLoader
 import wandb
@@ -220,6 +221,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--run_name", type=str, default="cond_trace_tsne")
     parser.add_argument("--grad_cp", type=bool, default=True)
+    parser.add_argument(
+        "--precision",
+        type=str,
+        default=None,
+        choices=["fp32", "fp16"],
+        help="Precision strategy: fp32 or autocast (fp16). Default: fp16 for JointAttDiT.",
+    )
     return parser.parse_args()
 
 
@@ -231,6 +239,14 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+
+    if args.precision is None:
+        args.precision = "fp16"
+    use_amp = args.precision == "fp16" and device.type == "cuda"
+    if args.precision == "fp16" and device.type != "cuda":
+        print("AMP selected but CUDA is not available; falling back to fp32.")
+        args.precision = "fp32"
+        use_amp = False
 
     dataloader, seq_len = build_dataloader(args)
     vae, model = load_models(args, seq_len, device)
@@ -247,6 +263,7 @@ def main():
     wandb.init(project="rf_dit_structure", name=args.run_name, config=vars(args))
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0)
+    scaler = amp.GradScaler(enabled=use_amp)
     rf = RF(model)
     model.train()
 
@@ -265,10 +282,13 @@ def main():
         z = prepare_latents(structure, vae, args.latent_scale)
 
         optimizer.zero_grad()
-        loss, cond_trace = rf.forward_with_trace(z, hic)
-        loss.backward()
+        with amp.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
+            loss, cond_trace = rf.forward_with_trace(z, hic)
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
 
         log_data = {"train/loss": loss.item(), "step": global_step + 1}
 

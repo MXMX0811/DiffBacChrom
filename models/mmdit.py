@@ -35,22 +35,19 @@ class FlashAttention(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, s, _ = x.shape
 
-        # LayerNorm under autocast emits fp32; cast back to the autocast dtype so FlashAttention
-        # can use the fast path on GPU.
+        qkv = self.qkv(x)
+        qkv = qkv.view(b, s, 3, self.num_heads, self.head_dim)
+        
         target_dtype = None
-        if x.is_cuda:
+        if qkv.is_cuda:
             if torch.is_autocast_enabled():
                 target_dtype = torch.get_autocast_gpu_dtype()
-            elif x.dtype in (torch.float16, torch.bfloat16):
-                target_dtype = x.dtype
+            elif qkv.dtype in (torch.float16, torch.bfloat16):
+                target_dtype = qkv.dtype
 
-        x_attn = x.to(target_dtype) if target_dtype is not None and x.dtype != target_dtype else x
+        qkv = qkv.to(target_dtype) if target_dtype is not None and qkv.dtype != target_dtype else qkv
 
-        qkv = self.qkv(x_attn)
-        qkv = qkv.view(b, s, 3, self.num_heads, self.head_dim)
-        # print(x_attn.dtype)
-
-        if x_attn.is_cuda and x_attn.dtype in (torch.float16, torch.bfloat16):
+        if qkv.is_cuda and qkv.dtype in (torch.float16, torch.bfloat16):
             attn_out = self.inner_attn(qkv)
         else:
             q, k, v = qkv.unbind(dim=2)
