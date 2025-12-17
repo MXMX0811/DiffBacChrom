@@ -145,7 +145,7 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
     parser.add_argument("--sample_steps", type=int, default=50, help="RF sampling steps")
-    parser.add_argument("--model", type=str, default="JointAttDiT", choices=["CrossDiT", "JointAttDiT", "MMDiTX"], help="Select backbone model")
+    parser.add_argument("--model", type=str, default="MMDiTX", choices=["CrossDiT", "JointAttDiT", "MMDiTX"], help="Select backbone model")
     parser.add_argument(
         "--size",
         type=lambda s: s.upper(),
