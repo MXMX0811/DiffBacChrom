@@ -14,9 +14,9 @@ PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from diffbacchrom.crossdit import DiT_models as CrossDiT_models
-from diffbacchrom.mmdit import DiT_models as MMDiT_models
-from diffbacchrom.vae import StructureAutoencoderKL1D
+from models.crossdit import DiT_models as CrossDiT_models
+from models.mmdit import DiT_models as MMDiT_models
+from models.vae import StructureAutoencoderKL1D
 from scripts.train_dit import RF
 
 

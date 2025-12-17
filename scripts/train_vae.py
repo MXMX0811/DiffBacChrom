@@ -12,8 +12,8 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from diffbacchrom.vae import StructureAutoencoderKL1D
-from scripts.dataloader import HiCStructureDataset, collate_fn
+from models.vae import StructureAutoencoderKL1D
+from data.dataset import HiCStructureDataset, collate_fn
 
 # shared indices
 COORD_IDX = [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]

@@ -7,8 +7,10 @@ import pandas as pd
 import numpy as np 
 import torch
 from torch.utils.data import DataLoader
+from torch import amp
 from tqdm import tqdm
 import wandb
+from contextlib import nullcontext
 
 import sys
 
@@ -16,11 +18,11 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from diffbacchrom.crossdit import DiT_models as CrossDiT_models
-from diffbacchrom.mmdit import DiT_models as MMDiT_models
-from diffbacchrom.mmditx import DiT_models as MMDiTX_models
-from diffbacchrom.vae import StructureAutoencoderKL1D
-from scripts.dataloader import HiCStructureDataset, collate_fn
+from models.crossdit import DiT_models as CrossDiT_models
+from models.mmdit import DiT_models as MMDiT_models
+from models.mmditx import DiT_models as MMDiTX_models
+from models.vae import StructureAutoencoderKL1D
+from data.dataset import HiCStructureDataset, collate_fn
 
 
 class RF:
@@ -40,6 +42,8 @@ class RF:
         zt = (1 - texp) * data_latent + texp * noise
 
         vtheta = self.model(zt, t, hic)
+        if isinstance(vtheta, tuple):
+            vtheta = vtheta[0]
         B, C, T = vtheta.shape
         assert C % 2 == 0
         C_half = C // 2
@@ -63,6 +67,8 @@ class RF:
         for i in range(sample_steps, 0, -1):
             t = torch.full((b,), i / sample_steps, device=hic.device)
             vc = self.model(z, t, hic, cfg_scale=cfg_scale)
+            if isinstance(vc, tuple):
+                vc = vc[0]
             B, C, T = vc.shape
             C_half = C // 2
             vc, _ = torch.split(vc, C_half, dim=1)
@@ -140,11 +146,11 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
     parser.add_argument("--sample_steps", type=int, default=50, help="RF sampling steps")
-    parser.add_argument("--model", type=str, default="CrossDiT", choices=["CrossDiT", "JointAttDiT", "MMDiTX"], help="Select backbone model")
+    parser.add_argument("--model", type=str, default="JointAttDiT", choices=["CrossDiT", "JointAttDiT", "MMDiTX"], help="Select backbone model")
     parser.add_argument(
         "--size",
         type=lambda s: s.upper(),
-        default="S",
+        default="L",
         choices=["S", "B", "L", "XL"],
         help="DiT model size (S/B/L/XL)",
     )
@@ -160,12 +166,21 @@ def main():
         default=None,
         help="Warmup steps for cosine scheduler (set 0 to keep constant learning rate)",
     )
+    parser.add_argument(
+        "--precision",
+        type=str,
+        default=None,
+        choices=["fp32", "fp16"],
+        help="Precision strategy: fp32 or autocast (fp16). Default: CrossDiT->fp32, others->fp16.",
+    )
     args = parser.parse_args()
 
     if args.cfg_scale is None:
         args.cfg_scale = 1.0 if args.model == "CrossDiT" else 1.5
     if args.warmup_steps is None:
         args.warmup_steps = 0 if args.model == "CrossDiT" else 1000
+    if args.precision is None:
+        args.precision = "fp32" if args.model == "CrossDiT" else "fp16"
     if args.model != "CrossDiT":
         if args.use_global_cond:
             print("Warning: --use_global_cond is only supported when model=CrossDiT; disabled.")
@@ -182,6 +197,11 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+    use_amp = args.precision == "fp16" and device.type == "cuda"
+    if args.precision == "fp16" and device.type != "cuda":
+        print("AMP selected but CUDA is not available; falling back to fp32.")
+        args.precision = "fp32"
+        use_amp = False
 
     dataset = HiCStructureDataset(
         root_dir=args.root_dir,
@@ -264,6 +284,7 @@ def main():
 
     rf = RF(model)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0)
+    scaler = amp.GradScaler(enabled=use_amp)
     total_steps = args.epochs * len(dataloader)
     scheduler = None
 
@@ -286,10 +307,13 @@ def main():
                 z = vae.encode(structure).latent_dist.sample().mul_(args.latent_scale)  # (B,W,C)
 
             optimizer.zero_grad()
-            loss = rf.forward(z, hic)
-            loss.backward()
+            with amp.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
+                loss = rf.forward(z, hic)
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(rf.model.parameters(), max_norm=1.0)
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
             if scheduler is not None:
                 scheduler.step()
 
@@ -328,7 +352,8 @@ def main():
                 shape=(hic.shape[0], seq_len, vae.z_channels), 
                 cfg_scale=args.cfg_scale
             )
-            decoded = vae.decode(sample_latent / args.latent_scale)  # (B,W,16) in normalized space
+            with amp.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
+                decoded = vae.decode(sample_latent / args.latent_scale)  # (B,W,16) in normalized space
             decoded = apply_mask_threshold(decoded)
             decoded_cpu = decoded.cpu()
 

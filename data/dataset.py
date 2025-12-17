@@ -7,9 +7,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
 
-import sys
-sys.path.append(".")
-from scripts.preprocess import center_batch, scale_batch, random_rotate_batch
+from data.transforms import center_batch, scale_batch, random_rotate_batch
 
 
 class HiCStructureDataset(Dataset):

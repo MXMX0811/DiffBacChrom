@@ -1,6 +1,7 @@
 .*
 checkpoints/*
-data/*
+data/test
+data/train
 outputs/*
 wandb
 checkpoints
