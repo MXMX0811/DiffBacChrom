@@ -13,7 +13,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from models.vae import StructureAutoencoderKL1D
+from models.vae1d import StructureAutoencoderKL1D
 from train.train_vae import compute_vae_losses, COORD_IDX, MASK_IDX
 from data.transforms import center_batch, scale_batch
 from scripts.sample_vae import rebuild_structure_tables 

@@ -20,7 +20,7 @@ if PROJECT_ROOT not in sys.path:
 from models.crossdit import DiT_models as CrossDiT_models
 from models.mmdit import DiT_models as MMDiT_models
 from models.mmditx import DiT_models as MMDiTX_models
-from models.vae import StructureAutoencoderKL1D
+from models.vae1d import StructureAutoencoderKL1D
 from data.dataset import HiCStructureDataset, collate_fn
 
 
