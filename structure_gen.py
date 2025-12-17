@@ -20,6 +20,17 @@ from diffbacchrom.vae import StructureAutoencoderKL1D
 from scripts.train_dit import RF
 
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        if v.lower() in ("yes", "true", "t", "1"):
+            return True
+        if v.lower() in ("no", "false", "f", "0"):
+            return False
+    raise argparse.ArgumentTypeError("Boolean value expected.")
+
+
 def load_hic_matrix(hic_path: str) -> torch.Tensor:
     df = pd.read_csv(hic_path, sep="\t")
     if "hic_index" not in df.columns:
@@ -62,6 +73,36 @@ def apply_mask_threshold(struct: torch.Tensor) -> torch.Tensor:
     return struct_view.reshape(struct.shape)
 
 
+def resolve_use_global_cond(args, ckpt_data):
+    """
+    Decide use_global_cond for CrossDiT:
+    1) explicit CLI (--use_global_cond) wins
+    2) ckpt['config']['use_global_cond'] if present
+    3) infer from state_dict keys containing 'global_cond'
+    4) fallback False with a warning
+    """
+    if args.model != "CrossDiT":
+        return None
+    if args.use_global_cond is not None:
+        return args.use_global_cond
+
+    ckpt_config = None
+    if isinstance(ckpt_data, dict):
+        maybe_cfg = ckpt_data.get("config")
+        if isinstance(maybe_cfg, dict):
+            ckpt_config = maybe_cfg
+    if ckpt_config and "use_global_cond" in ckpt_config:
+        return bool(ckpt_config["use_global_cond"])
+
+    state_dict = ckpt_data["model"] if isinstance(ckpt_data, dict) and "model" in ckpt_data else ckpt_data
+    if isinstance(state_dict, dict) and any("global_cond" in k for k in state_dict.keys()):
+        print("Detected global_cond parameters in checkpoint; enabling use_global_cond=True")
+        return True
+
+    print("No global_cond metadata found; defaulting use_global_cond=False. Pass --use_global_cond to override.")
+    return False
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--hic_path", type=str, default="data/train/Pair_10/Pair_10_sim_hic_freq.tsv", help="Path to Hi-C tsv (e.g., data/train/Pair_X/Pair_X_sim_hic_freq.tsv)")
@@ -80,6 +121,12 @@ def main():
     parser.add_argument("--num_samples", type=int, default=500, help="Number of sequences to generate")
     parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
     parser.add_argument("--output_root", type=str, default="outputs/dit_samples", help="Output root directory")
+    parser.add_argument(
+        "--use_global_cond",
+        type=str2bool,
+        default=None,
+        help="For CrossDiT only: override whether global conditioning is used. Default: auto from checkpoint.",
+    )
     args = parser.parse_args()
     
     if args.cfg_scale is None:
@@ -103,29 +150,32 @@ def main():
     for p in vae.parameters():
         p.requires_grad_(False)
 
+    ckpt_data = torch.load(args.dit_ckpt, map_location="cpu")
+    use_global_cond = resolve_use_global_cond(args, ckpt_data)
+
     dit_size_key = f"DiT-{args.size}"
     if args.model == "CrossDiT":
         model_fn = CrossDiT_models[dit_size_key]
         model_kwargs = {
             "input_size": seq_len,
             "in_channels": vae.z_channels,
-            "use_global_cond": args.use_global_cond,
-            "gradient_checkpointing": args.grad_cp,
+            "use_global_cond": use_global_cond,
+            "gradient_checkpointing": False,
         }
     elif args.model == "MMDiT":
         model_fn = MMDiT_models[dit_size_key]
         model_kwargs = {
             "input_size": seq_len,
             "in_channels": vae.z_channels,
-            "gradient_checkpointing": args.grad_cp,
+            "gradient_checkpointing": False,
         }
     else:
         raise ValueError(f"Unsupported model type: {args.model}")
 
     dit = model_fn(**model_kwargs).to(device)
         
-    ckpt = torch.load(args.dit_ckpt, map_location="cpu")
-    dit.load_state_dict(ckpt["model"])
+    state_dict = ckpt_data["model"] if isinstance(ckpt_data, dict) and "model" in ckpt_data else ckpt_data
+    dit.load_state_dict(state_dict)
     dit.eval()
 
     rf = RF(dit)

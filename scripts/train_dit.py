@@ -340,8 +340,14 @@ def main():
                 output_dir=os.path.join(args.save_dir, f"samples_epoch{epoch+1:03d}"),
             )
 
+        ckpt_payload = {
+            "epoch": epoch + 1,
+            "model": rf.model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "config": vars(args),
+        }
         ckpt_path = os.path.join(args.save_dir, f"epoch_{epoch+1:03d}.pt")
-        torch.save({"epoch": epoch + 1, "model": rf.model.state_dict(), "optimizer": optimizer.state_dict()}, ckpt_path)
+        torch.save(ckpt_payload, ckpt_path)
         wandb.save(ckpt_path)
 
     torch.save(rf.model.state_dict(), os.path.join(args.save_dir, "final.ckpt"))
