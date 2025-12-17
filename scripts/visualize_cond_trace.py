@@ -204,7 +204,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--size",
         type=lambda s: s.upper(),
-        default="B",
+        default="L",
         choices=["S", "B", "L", "XL"],
         help="DiT model size (S/B/L/XL)",
     )

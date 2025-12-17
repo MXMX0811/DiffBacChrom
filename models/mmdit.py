@@ -295,8 +295,17 @@ class DiTBlock(nn.Module):
         # Joint attention over concatenated latent and condition tokens
         x_mod = modulate(self.norm_joint_x(x), shift_joint_x, scale_joint_x)
         cond_mod = modulate(self.norm_joint_c(cond_tokens), shift_joint_t, scale_joint_t)
-        joint = torch.cat([x_mod, cond_mod], dim=1)
+        
+        # joint = torch.cat([x_mod, cond_mod], dim=1)
+        # joint_out = self.joint_attn(joint)
+        # Instead of concatenation, use in-place copy for memory efficiency
+        B, Tx, D = x_mod.shape
+        Tc = cond_mod.shape[1]
+        joint = torch.empty(B, Tx + Tc, D, device=x_mod.device, dtype=x_mod.dtype)
+        joint[:, :Tx].copy_(x_mod)
+        joint[:, Tx:].copy_(cond_mod)
         joint_out = self.joint_attn(joint)
+
         x_out, cond_out = joint_out.split([x.shape[1], cond_tokens.shape[1]], dim=1)
         x = x + gate_joint_x.unsqueeze(1) * x_out
         cond_tokens = cond_tokens + gate_joint_t.unsqueeze(1) * cond_out
@@ -462,11 +471,7 @@ class DiT(nn.Module):
                     # torch.utils.checkpoint will re-run the block outside autocast by default;
                     # wrap it to keep the current autocast state so FlashAttention runs in fp16/bf16.
                     def _wrapped_block(*inputs):
-                        with torch.cuda.amp.autocast(
-                            device_type="cuda",
-                            dtype=torch.float16,
-                            enabled=torch.is_autocast_enabled()
-                        ):
+                        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                             return block(*inputs)
 
                     x, cond_tokens, cond_post_attn = cp.checkpoint(

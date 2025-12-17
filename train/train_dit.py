@@ -145,11 +145,11 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
     parser.add_argument("--sample_steps", type=int, default=50, help="RF sampling steps")
-    parser.add_argument("--model", type=str, default="MMDiTX", choices=["CrossDiT", "JointAttDiT", "MMDiTX"], help="Select backbone model")
+    parser.add_argument("--model", type=str, default="JointAttDiT", choices=["CrossDiT", "JointAttDiT", "MMDiTX"], help="Select backbone model")
     parser.add_argument(
         "--size",
         type=lambda s: s.upper(),
-        default="B",
+        default="L",
         choices=["S", "B", "L", "XL"],
         help="DiT model size (S/B/L/XL)",
     )
@@ -184,8 +184,9 @@ def main():
         if args.use_global_cond:
             print("Warning: --use_global_cond is only supported when model=CrossDiT; disabled.")
             args.use_global_cond = False
+    if args.model == "MMDiTX":        
         if args.grad_cp:
-            print("Warning: --grad_cp is only supported when model=CrossDiT; disabled.")
+            print("Warning: --grad_cp is only supported when model=CrossDiT or JointAttDiT; disabled.")
             args.grad_cp = False
 
     if args.save_dir is None:
