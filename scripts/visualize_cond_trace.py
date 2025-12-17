@@ -90,7 +90,7 @@ def build_dataloader(args: argparse.Namespace) -> Tuple[DataLoader, int]:
         dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=args.num_workers,
+        num_workers=4,
         pin_memory=True,
         collate_fn=partial(collate_fn, train=True),
     )
@@ -191,8 +191,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--root_dir", type=str, default="data/train")
     parser.add_argument("--hic_dirname", type=str, default="Hi-C")
     parser.add_argument("--struct_dirname", type=str, default="structure")
-    parser.add_argument("--batch_size", type=int, default=12)
-    parser.add_argument("--num_workers", type=int, default=2)
+    parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--latent_scale", type=float, default=1.335256)
     parser.add_argument(
         "--model",
