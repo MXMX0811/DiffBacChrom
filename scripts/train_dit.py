@@ -10,7 +10,6 @@ from torch.utils.data import DataLoader
 from torch import amp
 from tqdm import tqdm
 import wandb
-from contextlib import nullcontext
 
 import sys
 
@@ -156,7 +155,7 @@ def main():
     )
     parser.add_argument("--use_global_cond", type=bool, default=True, help="Whether CrossDiT uses global conditioning (CrossDiT only)")
     parser.add_argument("--cfg_scale", type=float, default=None, help="Classifier-free guidance scale for inference")
-    parser.add_argument("--grad_cp", type=bool, default=True, help="Use gradient checkpointing to save memory")
+    parser.add_argument("--grad_cp", type=bool, default=False, help="Use gradient checkpointing to save memory")
     parser.add_argument("--save_dir", type=str, default=None, help="Checkpoint directory (default: checkpoints/dit/<model>)")
     parser.add_argument("--vae_ckpt", type=str, default="checkpoints/vae/epoch_040.pt")
     parser.add_argument("--run_name", type=str, default="rf_dit_structure")
