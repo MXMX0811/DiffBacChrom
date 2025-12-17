@@ -250,12 +250,16 @@ class DiTBlock(nn.Module):
         x_out, cond_out = joint_out.split([x.shape[1], cond_tokens.shape[1]], dim=1)
         x = x + gate_joint_x.unsqueeze(1) * x_out
         cond_tokens = cond_tokens + gate_joint_t.unsqueeze(1) * cond_out
+        
+        # For condition entanglement analysis, return updated cond_tokens
+        # Used in visualize_cond_trace.py
+        cond_post_attn = cond_tokens.detach().cpu()
 
         # Per-modality MLP updates
         x = x + gate_mlp_x.unsqueeze(1) * self.mlp(modulate(self.norm2_x(x), shift_mlp_x, scale_mlp_x))
         cond_tokens = cond_tokens + gate_mlp_t.unsqueeze(1) * self.mlp_cond(modulate(self.norm2_c(cond_tokens), shift_mlp_t, scale_mlp_t))
 
-        return x, cond_tokens
+        return x, cond_tokens, cond_post_attn
 
 
 class FinalLayer(nn.Module):
@@ -383,13 +387,17 @@ class DiT(nn.Module):
         Returns:
             (N, out_channels, T)
         """
-
+        # For tracing condition tokens
+        cond_trace = []
+        
         # --------------------------------------------------
         # Case 1: training OR no guidance
         # --------------------------------------------------
         if self.training or cfg_scale == 1.0:
             # Hi-C tokens (with dropout during training)
             cond_tokens = self.hic_encoder(H, train=self.training)
+            
+            cond_trace.append(cond_tokens.detach().cpu())
 
             # latent embedding
             x = self.x_embedder(x)
@@ -401,14 +409,15 @@ class DiT(nn.Module):
             # joint MM-DiT blocks
             for block in self.blocks:
                 if self.gradient_checkpointing and self.training:
-                    x, cond_tokens = cp.checkpoint(
+                    x, cond_tokens, cond_post_attn = cp.checkpoint(
                         block, x, t_emb, cond_tokens, use_reentrant=False
                     )
                 else:
-                    x, cond_tokens = block(x, t_emb, cond_tokens)
+                    x, cond_tokens, cond_post_attn = block(x, t_emb, cond_tokens)
+                cond_trace.append(cond_post_attn)
 
             x = self.final_layer(x, t_emb)
-            return self.unpatchify(x)
+            return self.unpatchify(x), cond_trace
 
         # --------------------------------------------------
         # Case 2: CFG inference (SD3-style joint MM-DiT)
@@ -432,6 +441,8 @@ class DiT(nn.Module):
             half, dtype=cond_tokens.dtype, device=cond_tokens.device
         )
         cond_tokens = torch.cat([cond_tokens, uncond_tokens], dim=0)
+        
+        cond_trace.append(cond_tokens.detach().cpu())
 
         # latent embedding
         x = self.x_embedder(x)
@@ -442,7 +453,8 @@ class DiT(nn.Module):
 
         # joint MM-DiT blocks (cond_tokens WILL be updated)
         for block in self.blocks:
-            x, cond_tokens = block(x, t_emb, cond_tokens)
+            x, cond_tokens, cond_post_attn = block(x, t_emb, cond_tokens)
+            cond_trace.append(cond_post_attn)
 
         # output
         x = self.final_layer(x, t_emb)
@@ -455,7 +467,7 @@ class DiT(nn.Module):
         x_guided = x_uncond + cfg_scale * (x_cond - x_uncond)
 
         # return full batch (SD-style sampler compatibility)
-        return torch.cat([x_guided, x_guided], dim=0)
+        return torch.cat([x_guided, x_guided], dim=0), cond_trace
 
 
 #################################################################################
