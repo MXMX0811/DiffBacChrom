@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import torch.utils.checkpoint as cp
 from timm.models.vision_transformer import Attention, Mlp
 
-from . import cnn
+from . import hic_cnn
 from .pos_embed import get_1d_sincos_pos_embed_from_grid
 
 
@@ -219,7 +219,7 @@ class HiCEncoder8f(nn.Module):
         self.downsample_factor = 8
         reduced_size = input_size // self.downsample_factor
 
-        self.cnn_encoder = cnn.CNNEncoder(
+        self.cnn_encoder = hic_cnn.CNNEncoder(
             ch=cnn_ch,
             ch_mult=cnn_ch_mult,
             num_res_blocks=cnn_num_res_blocks,
