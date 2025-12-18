@@ -62,7 +62,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--run_name", type=str, default="diffbacchrom-vae")
-    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--model", type=str, choices=["vae1d", "sdvae1d"], default="sdvae1d")
     args = parser.parse_args()
 

@@ -4,63 +4,13 @@ import numpy as np
 import math
 import torch.nn.functional as F
 import torch.utils.checkpoint as cp
-from flash_attn.modules.mha import FlashSelfAttention
-from flash_attn.modules.mlp import Mlp
+from timm.models.vision_transformer import Attention, Mlp
+from .pos_embed import get_1d_sincos_pos_embed_from_grid
+from .hic_encoder import HiCEncoder8f
 
 
 def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
-
-
-def approx_gelu(x):
-    return F.gelu(x, approximate="tanh")
-
-
-class FlashAttention(nn.Module):
-    """
-    FlashAttention-backed self-attention with a safe CPU/FP32 fallback.
-    """
-    def __init__(self, dim: int, num_heads: int, qkv_bias: bool = True, dropout: float = 0.0):
-        super().__init__()
-        if dim % num_heads != 0:
-            raise ValueError("dim must be divisible by num_heads")
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.dropout = float(dropout)
-
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.proj = nn.Linear(dim, dim)
-        self.inner_attn = FlashSelfAttention(attention_dropout=dropout)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        b, s, _ = x.shape
-
-        qkv = self.qkv(x)
-        qkv = qkv.view(b, s, 3, self.num_heads, self.head_dim)
-        
-        target_dtype = None
-        if qkv.is_cuda:
-            if torch.is_autocast_enabled():
-                target_dtype = torch.get_autocast_gpu_dtype()
-            elif qkv.dtype in (torch.float16, torch.bfloat16):
-                target_dtype = qkv.dtype
-
-        qkv = qkv.to(target_dtype) if target_dtype is not None and qkv.dtype != target_dtype else qkv
-
-        if qkv.is_cuda and qkv.dtype in (torch.float16, torch.bfloat16):
-            attn_out = self.inner_attn(qkv)
-        else:
-            q, k, v = qkv.unbind(dim=2)
-            attn_out = F.scaled_dot_product_attention(
-                q.transpose(1, 2),
-                k.transpose(1, 2),
-                v.transpose(1, 2),
-                dropout_p=self.dropout if self.training else 0.0,
-                is_causal=False,
-            ).transpose(1, 2)
-
-        attn_out = attn_out.reshape(b, s, self.num_heads * self.head_dim)
-        return self.proj(attn_out)
 
 
 #################################################################################
@@ -107,138 +57,6 @@ class TimestepEmbedder(nn.Module):
 
 
 #################################################################################
-#                                   HiC Encoder                                 #
-#################################################################################
-
-class EncoderBlock(nn.Module):
-    """Transformer block used in HiC encoder."""
-    def __init__(self, dim, num_heads, mlp_ratio=4.0, drop=0.0):
-        super().__init__()
-        self.norm1 = nn.LayerNorm(dim, eps=1e-6)
-        self.attn = FlashAttention(dim, num_heads=num_heads, qkv_bias=True, dropout=drop)
-        self.norm2 = nn.LayerNorm(dim, eps=1e-6)
-        mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, activation=approx_gelu)
-
-    def forward(self, x):
-        x = x + self.attn(self.norm1(x))
-        x = x + self.mlp(self.norm2(x))
-        return x
-
-
-class HiCEncoder(nn.Module):
-    """
-    ViT-based encoder for square Hi-C matrices.
-    - input_size: W (H=W)
-    - embed_dim: internal ViT width
-    - depth, num_heads: ViT depth/heads
-    - out_dim: project to DiT hidden_size (e.g., 1152 for DiT-XL)
-    Reuses the existing 1D sin-cos pos embedding functions over bins.
-    """
-    def __init__(
-        self,
-        input_size: int,
-        embed_dim: int = 512,
-        depth: int = 8,
-        num_heads: int = 8,
-        mlp_ratio: float = 4.0,
-        out_dim: int = 1152,
-        dropout_prob: float = 0.1,
-        use_learned_null: bool = True,
-    ):
-        super().__init__()
-        self.input_size = input_size
-        self.embed_dim = embed_dim
-
-        # For each bin i, take the Hi-C row H[:, :, i, :] (contacts to all bins, length W)
-        # and project it to embed_dim as a token.
-        self.row_embed = nn.Linear(input_size, embed_dim, bias=True)
-
-        # sequence length for cond tokens is exactly W (one token per bin)
-        s_cond = input_size
-
-        # fixed 1D sin-cos embedding over bins:
-        self.pos_embed = nn.Parameter(torch.zeros(1, s_cond, embed_dim), requires_grad=False)
-        
-        self.blocks = nn.ModuleList([
-            EncoderBlock(embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
-        ])
-        self.norm = nn.LayerNorm(embed_dim, eps=1e-6)
-        self.proj_out = nn.Linear(embed_dim, out_dim, bias=True)  # map to DiT hidden size
-
-        # dropout for condition tokens
-        self.dropout_prob = float(dropout_prob)
-        self.use_dropout = self.dropout_prob > 0
-        self.use_learned_null = bool(use_learned_null)
-        if self.use_learned_null:
-            # (1, S_cond, out_dim)
-            self.null_cond = nn.Parameter(torch.zeros(1, s_cond, out_dim))
-        else:
-            self.register_buffer("null_cond", torch.zeros(1, s_cond, out_dim), persistent=False)
-        
-        self._init_weights()
-
-    def _init_weights(self):
-        # Initialize and freeze pos_embed with 1D sin-cos over bin indices [0..W-1]
-        grid = np.arange(self.input_size, dtype=np.float32)  # (W,)
-        pos = get_1d_sincos_pos_embed_from_grid(self.pos_embed.shape[-1], grid)
-        self.pos_embed.data.copy_(torch.from_numpy(pos).float().unsqueeze(0))
-
-        # initialize row_embed like a Linear layer
-        w = self.row_embed.weight.data
-        nn.init.xavier_uniform_(w)
-        nn.init.constant_(self.row_embed.bias, 0)
-
-    def token_drop(self, batch_size: int, device: torch.device, force_drop_ids: torch.Tensor | None = None):
-        if force_drop_ids is None:
-            drop_ids = torch.rand(batch_size, device=device) < self.dropout_prob
-        else:
-            drop_ids = (force_drop_ids == 1)
-        return drop_ids
-    
-    def encode(self, H: torch.Tensor):
-        """
-        Encoding without dropout (for inference).
-        input: H (B, C, W, W)
-        Output: cond_tokens (B, W, out_dim), one token per bin.
-        """
-        B, C, W, W2 = H.shape
-        assert W == W2 == self.input_size, "Hi-C must be square W x W"
-
-        # collapse channel dimension (usually C=1) into a single Hi-C map per sample
-        H_mean = H.mean(dim=1)  # (B, W, W)
-
-        # for each bin i, use its Hi-C row as input features
-        x = self.row_embed(H_mean)  # (B, W, embed_dim)
-
-        pos = self.pos_embed.to(x.dtype)  # (1, W, embed_dim)
-        x = x + pos  # (B, W, embed_dim)
-
-        for blk in self.blocks:
-            x = blk(x)
-        x = self.norm(x)
-        x = self.proj_out(x)  # (B, W, out_dim)
-        return x
-
-    def forward(self, H: torch.Tensor, train: bool, force_drop_ids: torch.Tensor | None = None):
-        """
-        For training with condition dropout.
-        """
-        cond = self.encode(H)   # (B, W, out_dim)
-        B = cond.shape[0]
-        if (train and self.use_dropout) or (force_drop_ids is not None):
-            drop_ids = self.token_drop(B, cond.device, force_drop_ids)  # (B,)
-            if drop_ids.any():
-                null = self.null_cond.to(cond.dtype).expand(B, -1, -1)
-                cond = torch.where(drop_ids.view(B, 1, 1), null, cond)
-        return cond
-
-    @torch.no_grad()
-    def null_tokens(self, batch: int, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
-        return self.null_cond.to(device=device, dtype=dtype).expand(batch, -1, -1)
-
-
-#################################################################################
 #                                 Core DiT Model                                #
 #################################################################################
 
@@ -254,19 +72,20 @@ class DiTBlock(nn.Module):
         super().__init__()
         
         self.norm1 = nn.LayerNorm(hidden_size, eps=1e-6)
-        self.self_attn = FlashAttention(hidden_size, num_heads=num_heads, qkv_bias=True)
+        self.self_attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True)
 
         # Joint attention (MM-DiT style) over latent + condition tokens
         self.norm_joint_x = nn.LayerNorm(hidden_size, eps=1e-6)
         self.norm_joint_c = nn.LayerNorm(hidden_size, eps=1e-6)
-        self.joint_attn = FlashAttention(hidden_size, num_heads=num_heads, qkv_bias=True)
+        self.joint_attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True)
 
         # Modality-specific MLPs
         self.norm2_x = nn.LayerNorm(hidden_size, eps=1e-6)
         self.norm2_c = nn.LayerNorm(hidden_size, eps=1e-6)
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        self.mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, activation=approx_gelu)
-        self.mlp_cond = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, activation=approx_gelu)
+        approx_gelu = lambda: nn.GELU(approximate="tanh")
+        self.mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu)
+        self.mlp_cond = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu)
 
         # adaLN-zero
         self.adaLN_modulation = nn.Sequential(
@@ -295,17 +114,8 @@ class DiTBlock(nn.Module):
         # Joint attention over concatenated latent and condition tokens
         x_mod = modulate(self.norm_joint_x(x), shift_joint_x, scale_joint_x)
         cond_mod = modulate(self.norm_joint_c(cond_tokens), shift_joint_t, scale_joint_t)
-        
-        # joint = torch.cat([x_mod, cond_mod], dim=1)
-        # joint_out = self.joint_attn(joint)
-        # Instead of concatenation, use in-place copy for memory efficiency
-        B, Tx, D = x_mod.shape
-        Tc = cond_mod.shape[1]
-        joint = torch.empty(B, Tx + Tc, D, device=x_mod.device, dtype=x_mod.dtype)
-        joint[:, :Tx].copy_(x_mod)
-        joint[:, Tx:].copy_(cond_mod)
+        joint = torch.cat([x_mod, cond_mod], dim=1)
         joint_out = self.joint_attn(joint)
-
         x_out, cond_out = joint_out.split([x.shape[1], cond_tokens.shape[1]], dim=1)
         x = x + gate_joint_x.unsqueeze(1) * x_out
         cond_tokens = cond_tokens + gate_joint_t.unsqueeze(1) * cond_out
@@ -370,7 +180,13 @@ class DiT(nn.Module):
 
         self.t_embedder = TimestepEmbedder(hidden_size)
         # pass input_size from DiT to HiC encoder so W is shared
-        self.hic_encoder = HiCEncoder(input_size=input_size, out_dim=hidden_size, embed_dim=hidden_size, num_heads=num_heads)
+        self.hic_encoder = HiCEncoder8f(
+            input_size=input_size, 
+            out_dim=hidden_size, 
+            embed_dim=hidden_size // 2, 
+            vit_depth=4,
+            num_heads=num_heads,
+        )
         assert self.hic_encoder.proj_out.out_features == hidden_size
 
         # fixed sin-cos embedding:
@@ -468,14 +284,8 @@ class DiT(nn.Module):
             # joint MM-DiT blocks
             for block in self.blocks:
                 if self.gradient_checkpointing and self.training:
-                    # torch.utils.checkpoint will re-run the block outside autocast by default;
-                    # wrap it to keep the current autocast state so FlashAttention runs in fp16/bf16.
-                    def _wrapped_block(*inputs):
-                        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                            return block(*inputs)
-
                     x, cond_tokens, cond_post_attn = cp.checkpoint(
-                        _wrapped_block, x, t_emb, cond_tokens, use_reentrant=False
+                        block, x, t_emb, cond_tokens, use_reentrant=False
                     )
                 else:
                     x, cond_tokens, cond_post_attn = block(x, t_emb, cond_tokens)
@@ -533,61 +343,6 @@ class DiT(nn.Module):
 
         # return full batch (SD-style sampler compatibility)
         return torch.cat([x_guided, x_guided], dim=0), cond_trace
-
-
-#################################################################################
-#                   Sine/Cosine Positional Embedding Functions                  #
-#################################################################################
-# https://github.com/facebookresearch/mae/blob/main/util/pos_embed.py
-
-def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False, extra_tokens=0):
-    """
-    grid_size: int of the grid height and width
-    return:
-    pos_embed: [grid_size*grid_size, embed_dim] or [1+grid_size*grid_size, embed_dim] (w/ or w/o cls_token)
-    """
-    grid_h = np.arange(grid_size, dtype=np.float32)
-    grid_w = np.arange(grid_size, dtype=np.float32)
-    grid = np.meshgrid(grid_w, grid_h)  # here w goes first
-    grid = np.stack(grid, axis=0)
-
-    grid = grid.reshape([2, 1, grid_size, grid_size])
-    pos_embed = get_2d_sincos_pos_embed_from_grid(embed_dim, grid)
-    if cls_token and extra_tokens > 0:
-        pos_embed = np.concatenate([np.zeros([extra_tokens, embed_dim]), pos_embed], axis=0)
-    return pos_embed
-
-
-def get_2d_sincos_pos_embed_from_grid(embed_dim, grid):
-    assert embed_dim % 2 == 0
-
-    # use half of dimensions to encode grid_h
-    emb_h = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[0])  # (H*W, D/2)
-    emb_w = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[1])  # (H*W, D/2)
-
-    emb = np.concatenate([emb_h, emb_w], axis=1) # (H*W, D)
-    return emb
-
-
-def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
-    """
-    embed_dim: output dimension for each position
-    pos: a list of positions to be encoded: size (M,)
-    out: (M, D)
-    """
-    assert embed_dim % 2 == 0
-    omega = np.arange(embed_dim // 2, dtype=np.float64)
-    omega /= embed_dim / 2.
-    omega = 1. / 10000**omega  # (D/2,)
-
-    pos = pos.reshape(-1)  # (M,)
-    out = np.einsum('m,d->md', pos, omega)  # (M, D/2), outer product
-
-    emb_sin = np.sin(out) # (M, D/2)
-    emb_cos = np.cos(out) # (M, D/2)
-
-    emb = np.concatenate([emb_sin, emb_cos], axis=1)  # (M, D)
-    return emb
 
 
 #################################################################################
