@@ -153,6 +153,7 @@ def main():
         choices=["S", "B", "L", "XL"],
         help="DiT model size (S/B/L/XL)",
     )
+    parser.add_argument("--use_seq_compression", type=bool, default=True, help="Whether CrossDiT uses sequence compression (CrossDiT only)")
     parser.add_argument("--use_global_cond", type=bool, default=True, help="Whether CrossDiT uses global conditioning (CrossDiT only)")
     parser.add_argument("--cfg_scale", type=float, default=None, help="Classifier-free guidance scale for inference")
     parser.add_argument("--grad_cp", type=bool, default=True, help="Use gradient checkpointing to save memory")
@@ -184,6 +185,9 @@ def main():
         if args.use_global_cond:
             print("Warning: --use_global_cond is only supported when model=CrossDiT; disabled.")
             args.use_global_cond = False
+        if not args.use_seq_compression:
+            print("Warning: --use_seq_compression must be True for JointAttDiT and MMDiTX; enabled.")
+            args.use_seq_compression = True
     if args.model == "MMDiTX":        
         if args.grad_cp:
             print("Warning: --grad_cp is only supported when model=CrossDiT or JointAttDiT; disabled.")
