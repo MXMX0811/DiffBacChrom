@@ -13,6 +13,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from models.vae1d import StructureAutoencoderKL1D
+from models.sdvae1d import SDVAE
 from data.dataset import HiCStructureDataset, collate_fn
 
 # shared indices
@@ -61,7 +62,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--run_name", type=str, default="diffbacchrom-vae")
-    parser.add_argument("--batch_size", type=int, default=50)
+    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--model", type=str, choices=["vae1d", "sdvae1d"], default="sdvae1d")
     args = parser.parse_args()
 
     ROOT_DIR = "data/train"
@@ -71,7 +73,7 @@ def main():
     IN_CHANNELS = 16
     LR = 1e-4
     BETA_KL = 5e-3
-    SAVE_DIR = "checkpoints/vae"
+    SAVE_DIR = os.path.join("checkpoints", "vae", args.model)
     NUM_WORKERS = 4
     LAMBDA_MASK = 1.0
 
@@ -96,7 +98,18 @@ def main():
         pin_memory=True,
     )
 
-    model = StructureAutoencoderKL1D(in_channels=IN_CHANNELS, num_res_blocks=34).to(device)
+    if args.model == "vae1d":
+        model = StructureAutoencoderKL1D(in_channels=IN_CHANNELS, num_res_blocks=18).to(device)
+
+        def forward_batch(x):
+            return model(x)
+
+    else:
+        model = SDVAE(dtype=torch.float32, device=device).to(device)
+
+        def forward_batch(x):
+            return model(x)
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
     bce_mask = torch.nn.BCEWithLogitsLoss().to(device)
 
@@ -110,6 +123,7 @@ def main():
             lr=LR,
             beta_kl=BETA_KL,
             lambda_mask=LAMBDA_MASK,
+            model=args.model,
         ),
     )
 
@@ -130,7 +144,7 @@ def main():
             x = batch["structure"].to(device)  # (B,928,16)
 
             optimizer.zero_grad()
-            recon_x, mu, logvar = model(x)
+            recon_x, mu, logvar = forward_batch(x)
 
             loss, coord_loss, mask_loss, kl = compute_vae_losses(
                 x, recon_x, mu, logvar, bce_mask, beta_kl=BETA_KL, lambda_mask=LAMBDA_MASK
