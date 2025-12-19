@@ -26,7 +26,7 @@ def kl_loss_seq(mu, logvar):
     return kl.mean()
 
 
-def compute_vae_losses(x, recon_x, mu, logvar, bce_mask, beta_kl: float, lambda_mask: float):
+def compute_vae_losses(x, recon_x, mu, logvar, bce_mask, kl_weight: float, lambda_mask: float):
     """
     x/recon_x: (B, T, 16) normalized
     """
@@ -54,7 +54,7 @@ def compute_vae_losses(x, recon_x, mu, logvar, bce_mask, beta_kl: float, lambda_
     mask_loss = bce_mask(mask_pred, mask_target)
     kl = kl_loss_seq(mu, logvar)
 
-    loss = coord_loss + lambda_mask * mask_loss + beta_kl * kl
+    loss = coord_loss + lambda_mask * mask_loss + kl_weight * kl
     return loss, coord_loss, mask_loss, kl
 
 
@@ -62,17 +62,24 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--run_name", type=str, default="diffbacchrom-vae")
-    parser.add_argument("--batch_size", type=int, default=192)
+    parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--model", type=str, choices=["vae1d", "sdvae1d"], default="sdvae1d")
+    parser.add_argument("--kl_weight", type=float, default=None, help="KL loss weight")
+    parser.add_argument("--lr", type=float, default=None, help="Learning rate")
     args = parser.parse_args()
-
+    
+    if args.kl_weight is None:
+        args.kl_weight = 5e-3 if args.model == "vae1d" else 1e-5
+    if args.lr is None:
+        args.lr = 1e-4 if args.model == "vae1d" else 1e-5
+    if args.batch_size is None:
+        args.batch_size = 50 if args.model == "vae1d" else 192
+        
     ROOT_DIR = "data/train"
     HIC_DIRNAME = "Hi-C"
     STRUCT_DIRNAME = "structure"
     SEQ_LEN = 928
     IN_CHANNELS = 16
-    LR = 1e-4
-    BETA_KL = 5e-3
     SAVE_DIR = os.path.join("checkpoints", "vae", args.model)
     NUM_WORKERS = 4
     LAMBDA_MASK = 1.0
@@ -110,7 +117,7 @@ def main():
         def forward_batch(x):
             return model(x)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
     bce_mask = torch.nn.BCEWithLogitsLoss().to(device)
 
     wandb.init(
@@ -120,16 +127,14 @@ def main():
             epochs=args.epochs,
             batch_size=args.batch_size,
             seq_len=SEQ_LEN,
-            lr=LR,
-            beta_kl=BETA_KL,
+            lr=args.lr,
+            kl_weight=args.kl_weight,
             lambda_mask=LAMBDA_MASK,
             model=args.model,
         ),
     )
-
+    
     global_step = 0
-    latent_sq_sum = 0.0
-    latent_count = 0
 
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -139,6 +144,8 @@ def main():
         total_mask = 0
         total_kl = 0
         n = 0
+        
+        latent_sq_sum = 0.0
 
         for batch_idx, batch in enumerate(dataloader):
             x = batch["structure"].to(device)  # (B,928,16)
@@ -147,15 +154,15 @@ def main():
             recon_x, mu, logvar = forward_batch(x)
 
             loss, coord_loss, mask_loss, kl = compute_vae_losses(
-                x, recon_x, mu, logvar, bce_mask, beta_kl=BETA_KL, lambda_mask=LAMBDA_MASK
+                x, recon_x, mu, logvar, bce_mask, kl_weight=args.kl_weight, lambda_mask=LAMBDA_MASK
             )
 
             loss.backward()
             optimizer.step()
 
             with torch.no_grad():
-                latent_sq_sum += (mu ** 2).sum().item()
-                latent_count += mu.numel()
+                mu32 = mu.detach().float()
+                latent_sq_sum += mu32.pow(2).mean().item()   # 统计均值，不会溢出
 
             total_loss += loss.item()
             total_coord += coord_loss.item()
@@ -189,7 +196,7 @@ def main():
         avg_kl = total_kl / n
 
         # per-epoch latent scale estimate
-        latent_var_epoch = latent_sq_sum / max(latent_count, 1)
+        latent_var_epoch = latent_sq_sum / max(n, 1)
         latent_std_epoch = latent_var_epoch ** 0.5
         suggested_scale_epoch = 1.0 / latent_std_epoch
 
