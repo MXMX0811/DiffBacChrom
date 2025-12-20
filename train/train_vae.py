@@ -138,6 +138,8 @@ def main():
     )
     
     global_step = 0
+    
+    total_steps = args.epochs * len(dataloader)
 
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -155,9 +157,10 @@ def main():
 
             optimizer.zero_grad()
             recon_x, mu, logvar = forward_batch(x)
-
+            
+            lambda_mask = LAMBDA_MASK * (0.1 + 0.9 * (1 - batch_idx / total_steps))
             loss, coord_loss, mask_loss, kl = compute_vae_losses(
-                x, recon_x, mu, logvar, bce_mask, kl_weight=args.kl_weight, lambda_mask=LAMBDA_MASK
+                x, recon_x, mu, logvar, bce_mask, kl_weight=args.kl_weight, lambda_mask=0.1
             )
 
             loss.backward()
