@@ -102,12 +102,12 @@ def main():
         choices=["S", "B", "L", "XL"],
         help="DiT model size (S/B/L/XL)",
     )
-    parser.add_argument("--use_seq_compression", type=bool, default=True, help="Whether CrossDiT uses sequence compression (CrossDiT only)")
+    parser.add_argument("--use_seq_compression", type=bool, default=False, help="Whether CrossDiT uses sequence compression (CrossDiT only)")
     parser.add_argument("--use_global_cond", type=bool, default=True, help="Whether CrossDiT uses global conditioning (CrossDiT only)")
     parser.add_argument("--cfg_scale", type=float, default=None, help="Classifier-free guidance scale for inference")
     parser.add_argument("--grad_cp", type=bool, default=True, help="Use gradient checkpointing to save memory")
     parser.add_argument("--save_dir", type=str, default=None, help="Checkpoint directory (default: checkpoints/dit/<model>)")
-    parser.add_argument("--vae_ckpt", type=str, default="checkpoints/vae/epoch_040.pt")
+    parser.add_argument("--vae_ckpt", type=str, default=None)
     parser.add_argument("--run_name", type=str, default="rf_dit_structure")
     parser.add_argument(
         "--warmup_steps",
@@ -130,6 +130,7 @@ def main():
         args.warmup_steps = 0 if args.model == "CrossDiT" else 1000
     if args.precision is None:
         args.precision = "fp32" if args.model == "CrossDiT" else "fp16"
+        
     if args.model != "CrossDiT":
         if args.use_global_cond:
             print("Warning: --use_global_cond is only supported when model=CrossDiT; disabled.")
@@ -137,10 +138,17 @@ def main():
         if not args.use_seq_compression:
             print("Warning: --use_seq_compression must be True for JointAttDiT and MMDiTX; enabled.")
             args.use_seq_compression = True
+            
     if args.model == "MMDiTX":        
         if args.grad_cp:
             print("Warning: --grad_cp is only supported when model=CrossDiT or JointAttDiT; disabled.")
             args.grad_cp = False
+    
+    if args.vae_ckpt is None:
+        if args.use_seq_compression:
+            args.vae_ckpt = os.path.join("checkpoints", "vae", "sdvae1d" + "final.pt")
+        else:
+            args.vae_ckpt = os.path.join("checkpoints", "vae", "vae1d" + "final.pt")
 
     if args.save_dir is None:
         args.save_dir = os.path.join("checkpoints", "dit", args.model + "-" + args.size)

@@ -48,8 +48,11 @@ def compute_vae_losses(x, recon_x, mu, logvar, bce_mask, kl_weight: float, lambd
     coord_weight = torch.cat([w0, w1, w2, w3], dim=-1)  # (B,T,12)
 
     coord_mse = (recon_coords - coords) ** 2 * coord_weight
-    denom = coord_weight.sum().clamp_min(1.0)
-    coord_loss = coord_mse.sum() / denom
+    
+    coord_mse = coord_mse.sum(dim=-1)  # (B,T)
+    coord_weight_sum = coord_weight.sum(dim=-1)  # (B,T)
+    coord_loss_per_seq = coord_mse.sum(dim=-1) / coord_weight_sum.clamp_min(1.0)  # (B,)
+    coord_loss = coord_loss_per_seq.mean()
 
     mask_loss = bce_mask(mask_pred, mask_target)
     kl = kl_loss_seq(mu, logvar)
@@ -69,7 +72,7 @@ def main():
     args = parser.parse_args()
     
     if args.kl_weight is None:
-        args.kl_weight = 5e-3 if args.model == "vae1d" else 1e-5
+        args.kl_weight = 5e-3 if args.model == "vae1d" else 1e-6
     if args.lr is None:
         args.lr = 1e-4 if args.model == "vae1d" else 1e-5
     if args.batch_size is None:

@@ -191,7 +191,8 @@ class VAEEncoder(torch.nn.Module):
     def __init__(
         self,
         ch=128,
-        ch_mult=(1, 2, 4, 4),
+        # ch_mult=(1, 2, 4, 4), # 8x downsample
+        ch_mult=(1, 2, 4),  # 4x downsample
         num_res_blocks=2,
         in_channels=16,
         z_channels=16,
@@ -283,7 +284,8 @@ class VAEDecoder(torch.nn.Module):
         self,
         ch=128,
         out_ch=16,
-        ch_mult=(1, 2, 4, 4),
+        # ch_mult=(1, 2, 4, 4), # 8x upsample
+        ch_mult=(1, 2, 4),  # 4x upsample
         num_res_blocks=2,
         resolution=256,
         z_channels=16,
