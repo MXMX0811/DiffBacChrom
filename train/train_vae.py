@@ -45,14 +45,21 @@ def compute_vae_losses(x, recon_x, mu, logvar, bce_mask, kl_weight: float, lambd
     w1 = m1.expand_as(coords[..., 3:6])
     w2 = m2.expand_as(coords[..., 6:9])
     w3 = m3.expand_as(coords[..., 9:12])
-    coord_weight = torch.cat([w0, w1, w2, w3], dim=-1)  # (B,T,12)
+    coord_weight = torch.cat([w0, w1, w2, w3], dim=-1)  # (B, T, 12)
 
-    coord_mse = (recon_coords - coords) ** 2 * coord_weight
-    
-    coord_mse = coord_mse.sum(dim=-1)  # (B,T)
-    coord_weight_sum = coord_weight.sum(dim=-1)  # (B,T)
-    coord_loss_per_seq = coord_mse.sum(dim=-1) / coord_weight_sum.clamp_min(1.0)  # (B,)
-    coord_loss = coord_loss_per_seq.mean()
+    # 坐标加权 MSE
+    coord_mse = (recon_coords - coords) ** 2 * coord_weight   # (B, T, 12)
+
+    # 先在坐标维求和 → 每个 token 的误差 & 权重
+    coord_mse = coord_mse.sum(dim=-1)        # (B, T)
+    coord_weight_sum = coord_weight.sum(dim=-1)  # (B, T)
+
+    # 再在序列维求和 → 每个样本的总误差 & 总权重
+    per_seq_err = coord_mse.sum(dim=-1)          # (B,)
+    per_seq_weight = coord_weight_sum.sum(dim=-1).clamp_min(1.0)  # (B,)
+
+    coord_loss_per_seq = per_seq_err / per_seq_weight   # (B,)
+    coord_loss = coord_loss_per_seq.mean()              # scalar
 
     mask_loss = bce_mask(mask_pred, mask_target)
     kl = kl_loss_seq(mu, logvar)
@@ -85,7 +92,7 @@ def main():
     IN_CHANNELS = 16
     SAVE_DIR = os.path.join("checkpoints", "vae", args.model)
     NUM_WORKERS = 4
-    LAMBDA_MASK = 1.0
+    LAMBDA_MASK = 0.5
 
     os.makedirs(SAVE_DIR, exist_ok=True)
 
@@ -158,9 +165,9 @@ def main():
             optimizer.zero_grad()
             recon_x, mu, logvar = forward_batch(x)
             
-            lambda_mask = LAMBDA_MASK * (0.1 + 0.9 * (1 - batch_idx / total_steps))
+            # lambda_mask = LAMBDA_MASK * (0.1 + 0.9 * (1 - batch_idx / total_steps))
             loss, coord_loss, mask_loss, kl = compute_vae_losses(
-                x, recon_x, mu, logvar, bce_mask, kl_weight=args.kl_weight, lambda_mask=0.1
+                x, recon_x, mu, logvar, bce_mask, kl_weight=args.kl_weight, lambda_mask=LAMBDA_MASK
             )
 
             loss.backward()

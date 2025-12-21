@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from einops import repeat
 from timm.models.vision_transformer import Attention, Mlp
 from .pos_embed import get_1d_sincos_pos_embed_from_grid
-from .hic_encoder import HiCEncoder8f
+from .hic_encoder import HiCEncoder4f
 
 
 def modulate(x, shift, scale):
@@ -679,7 +679,7 @@ class MMDiTX(nn.Module):
         )
 
         # Hi-C encoder (one token per bin)
-        self.hic_encoder = HiCEncoder8f(
+        self.hic_encoder = HiCEncoder4f(
             input_size=input_size,
             embed_dim=hidden_size // 2,
             vit_depth=hic_vit_depth,

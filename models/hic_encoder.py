@@ -190,9 +190,9 @@ class HiCEncoder(nn.Module):
         return self.null_cond.to(device=device, dtype=dtype).expand(batch, -1, -1)
 
 
-class HiCEncoder8f(nn.Module):
+class HiCEncoder4f(nn.Module):
     """
-    Downsamples Hi-C with CNNEncoder (8x spatial reduction) before the transformer-based HiCEncoder.
+    Downsamples Hi-C with CNNEncoder (4x spatial reduction) before the transformer-based HiCEncoder.
     Keeps the same interface as HiCEncoder so it can be dropped in as a replacement.
     """
     def __init__(
@@ -207,16 +207,16 @@ class HiCEncoder8f(nn.Module):
         use_learned_null: bool = True,
         cnn_in_channels: int = 1,
         cnn_ch: int = 128,
-        cnn_ch_mult=(1, 2, 4, 4),
+        cnn_ch_mult=(1, 2, 4),
         cnn_num_res_blocks: int = 2,
         cnn_z_channels: int = 16,
     ):
         super().__init__()
-        if input_size % 8 != 0:
-            raise ValueError("HiCEncoder8f expects input_size divisible by 8 (three stride-2 downsamples).")
+        if input_size % 4 != 0:
+            raise ValueError("HiCEncoder4f expects input_size divisible by 4 (two stride-2 downsamples).")
 
         self.input_size = input_size
-        self.downsample_factor = 8
+        self.downsample_factor = 4
         reduced_size = input_size // self.downsample_factor
 
         self.cnn_encoder = hic_cnn.CNNEncoder(

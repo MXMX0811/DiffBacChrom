@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import torch.utils.checkpoint as cp
 from timm.models.vision_transformer import Attention, Mlp
 from .pos_embed import get_1d_sincos_pos_embed_from_grid
-from .hic_encoder import HiCEncoder8f
+from .hic_encoder import HiCEncoder4f
 
 
 def modulate(x, shift, scale):
@@ -180,7 +180,7 @@ class DiT(nn.Module):
 
         self.t_embedder = TimestepEmbedder(hidden_size)
         # pass input_size from DiT to HiC encoder so W is shared
-        self.hic_encoder = HiCEncoder8f(
+        self.hic_encoder = HiCEncoder4f(
             input_size=input_size, 
             out_dim=hidden_size, 
             embed_dim=hidden_size // 2, 
