@@ -72,18 +72,20 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--run_name", type=str, default="diffbacchrom-vae")
-    parser.add_argument("--batch_size", type=int, default=None)
+    parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--model", type=str, choices=["vae1d", "sdvae1d"], default="sdvae1d")
-    parser.add_argument("--kl_weight", type=float, default=None, help="KL loss weight")
-    parser.add_argument("--lr", type=float, default=None, help="Learning rate")
+    parser.add_argument("--kl_weight", type=float, default=5e-3, help="KL loss weight")
+    parser.add_argument("--mask_weight", type=float, default=1.0, help="Mask loss weight")
+    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate")
+    parser.add_argument("--use_seq_compression", type=bool, default=False)
     args = parser.parse_args()
     
     if args.kl_weight is None:
         args.kl_weight = 5e-3 if args.model == "vae1d" else 1e-6
     if args.lr is None:
         args.lr = 1e-4 if args.model == "vae1d" else 1e-5
-    if args.batch_size is None:
-        args.batch_size = 50 if args.model == "vae1d" else 192
+    if args.mask_weight is None:
+        args.mask_weight = 1.0 if args.model == "vae1d" else 0.5
         
     ROOT_DIR = "data/train"
     HIC_DIRNAME = "Hi-C"
@@ -92,7 +94,6 @@ def main():
     IN_CHANNELS = 16
     SAVE_DIR = os.path.join("checkpoints", "vae", args.model)
     NUM_WORKERS = 4
-    LAMBDA_MASK = 0.5
 
     os.makedirs(SAVE_DIR, exist_ok=True)
 
@@ -116,7 +117,11 @@ def main():
     )
 
     if args.model == "vae1d":
-        model = StructureAutoencoderKL1D(in_channels=IN_CHANNELS, num_res_blocks=18).to(device)
+        model = StructureAutoencoderKL1D(
+            in_channels=IN_CHANNELS, 
+            num_res_blocks=18, 
+            use_downsample=args.use_seq_compression
+        ).to(device)
 
         def forward_batch(x):
             return model(x)
@@ -139,7 +144,7 @@ def main():
             seq_len=SEQ_LEN,
             lr=args.lr,
             kl_weight=args.kl_weight,
-            lambda_mask=LAMBDA_MASK,
+            lambda_mask=args.mask_weight,
             model=args.model,
         ),
     )
@@ -167,7 +172,7 @@ def main():
             
             # lambda_mask = LAMBDA_MASK * (0.1 + 0.9 * (1 - batch_idx / total_steps))
             loss, coord_loss, mask_loss, kl = compute_vae_losses(
-                x, recon_x, mu, logvar, bce_mask, kl_weight=args.kl_weight, lambda_mask=LAMBDA_MASK
+                x, recon_x, mu, logvar, bce_mask, kl_weight=args.kl_weight, lambda_mask=args.mask_weight
             )
 
             loss.backward()
