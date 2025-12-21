@@ -102,7 +102,7 @@ def main():
         choices=["S", "B", "L", "XL"],
         help="DiT model size (S/B/L/XL)",
     )
-    parser.add_argument("--use_seq_compression", type=bool, default=False, help="Whether CrossDiT uses sequence compression (CrossDiT only)")
+    parser.add_argument("--use_seq_compression", type=bool, default=False)
     parser.add_argument("--use_global_cond", type=bool, default=True, help="Whether CrossDiT uses global conditioning (CrossDiT only)")
     parser.add_argument("--cfg_scale", type=float, default=None, help="Classifier-free guidance scale for inference")
     parser.add_argument("--grad_cp", type=bool, default=True, help="Use gradient checkpointing to save memory")
