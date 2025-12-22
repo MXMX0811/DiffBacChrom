@@ -76,9 +76,12 @@ def main():
     parser.add_argument("--model", type=str, choices=["vae1d", "sdvae1d"], default="sdvae1d")
     parser.add_argument("--kl_weight", type=float, default=5e-3, help="KL loss weight")
     parser.add_argument("--mask_weight", type=float, default=1.0, help="Mask loss weight")
-    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=None, help="Learning rate")
     parser.add_argument("--use_seq_compression", type=bool, default=False)
     args = parser.parse_args()
+    
+    if args.lr is None:
+        args.lr = 1e-4 if args.model == "vae1d" else 1e-5
         
     ROOT_DIR = "data/train"
     HIC_DIRNAME = "Hi-C"
