@@ -193,7 +193,7 @@ def main():
     # lookup for structure file paths so we can restore column names
     struct_lookup = {os.path.basename(s_path): s_path for _, s_path in dataset.samples}
 
-    if args.model == "CrossDiT":
+    if not args.use_seq_compression:
         vae = StructureAutoencoderKL1D().to(device)
     else:
         vae = SDVAE().to(device)
@@ -208,7 +208,7 @@ def main():
     if args.model == "CrossDiT":
         model_fn = CrossDiT_models[dit_size_key]
         model_kwargs = {
-            "input_size": seq_len,
+            "input_size": seq_len // (4 if args.use_seq_compression else 1),
             "in_channels": 16,
             "use_global_cond": args.use_global_cond,
             "seq_compression": args.use_seq_compression,
@@ -217,14 +217,14 @@ def main():
     elif args.model == "JointAttDiT":
         model_fn = MMDiT_models[dit_size_key]
         model_kwargs = {
-            "input_size": seq_len,
+            "input_size": seq_len // 4,
             "in_channels": 16,
             "gradient_checkpointing": args.grad_cp,
         }
     elif args.model == "MMDiTX":
         model_fn = MMDiTX_models[dit_size_key]
         model_kwargs = {
-            "input_size": seq_len,
+            "input_size": seq_len // 4,
             "in_channels": 16,
         }
     else:

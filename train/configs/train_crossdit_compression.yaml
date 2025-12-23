@@ -10,11 +10,11 @@ model: CrossDiT
 size: L               # S, B, L, XL
 use_seq_compression: true
 use_global_cond: true
-grad_cp: false
+grad_cp: true
 
 cfg_scale: 1.0
 warmup_steps: 0
-precision: fp32
+precision: fp16
 
 vae_ckpt: checkpoints/vae/sd-vae/final.pt
 save_dir: checkpoints/dit/CrossDiT-L 
