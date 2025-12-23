@@ -1,0 +1,19 @@
+# SD style VAE with 4x downsampling
+paths:
+  data_dir: data/train
+  save_dir: checkpoints/vae/sd-vae
+
+model:
+  name: sd-vae
+
+training:
+  epochs: 50
+  batch_size: 32
+  lr: 1e-5
+  kl_weight: 5e-3
+  mask_weight: 1.0
+  num_workers: 4
+
+logging:
+  proj_name: diffbacchrom-vae
+  run_name: sd-vae

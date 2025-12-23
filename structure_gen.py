@@ -16,7 +16,7 @@ if PROJECT_ROOT not in sys.path:
 
 from models.crossdit import DiT_models as CrossDiT_models
 from models.mmdit import DiT_models as MMDiT_models
-from models.vae1d import StructureAutoencoderKL1D
+from models.resnet_vae import StructureAutoencoderKL1D
 from train.rf import RF
 
 

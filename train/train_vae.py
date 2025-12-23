@@ -1,5 +1,6 @@
 import os
 import argparse
+import yaml
 from functools import partial
 
 import torch
@@ -12,8 +13,8 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from models.vae1d import StructureAutoencoderKL1D
-from models.sdvae1d import SDVAE
+from models.resnet_vae import StructureAutoencoderKL1D
+from models.sd_vae import SDVAE
 from data.dataset import HiCStructureDataset, collate_fn
 
 # shared indices
@@ -67,56 +68,61 @@ def compute_vae_losses(x, recon_x, mu, logvar, bce_mask, kl_weight: float, lambd
     loss = coord_loss + lambda_mask * mask_loss + kl_weight * kl
     return loss, coord_loss, mask_loss, kl
 
+def load_config(path):
+    with open(path, 'r', encoding='utf-8') as f:
+        return yaml.safe_load(f)
+
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--run_name", type=str, default="diffbacchrom-vae")
-    parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--model", type=str, choices=["vae1d", "sdvae1d"], default="sdvae1d")
-    parser.add_argument("--kl_weight", type=float, default=5e-3, help="KL loss weight")
-    parser.add_argument("--mask_weight", type=float, default=1.0, help="Mask loss weight")
-    parser.add_argument("--lr", type=float, default=None, help="Learning rate")
-    parser.add_argument("--use_seq_compression", type=bool, default=False)
+    parser.add_argument("--config", type=str, required=True)
     args = parser.parse_args()
+    config = load_config(args.config)
     
-    if args.lr is None:
-        args.lr = 1e-4 if args.model == "vae1d" else 1e-5
+    data_dir = config["paths"]["data_dir"]
+    save_dir = config["paths"]["save_dir"]
+    
+    model_name = config["model"]["name"]
+    num_res_blocks = int(config["model"]["num_res_blocks"])
+    use_seq_compression = bool(config["model"]["use_seq_compression"])
+    
+    epochs = int(config["training"]["epochs"])
+    batch_size = int(config["training"]["batch_size"])
+    lr = float(config["training"]["lr"])
+    kl_weight = float(config["training"]["kl_weight"])
+    mask_weight = float(config["training"]["mask_weight"])
+    num_workers = int(config["training"]["num_workers"])
+    
+    proj_name = config["logging"]["proj_name"]
+    run_name = config["logging"]["run_name"]
         
-    ROOT_DIR = "data/train"
-    HIC_DIRNAME = "Hi-C"
-    STRUCT_DIRNAME = "structure"
     SEQ_LEN = 928
     IN_CHANNELS = 16
-    SAVE_DIR = os.path.join("checkpoints", "vae", args.model)
-    NUM_WORKERS = 4
 
-    os.makedirs(SAVE_DIR, exist_ok=True)
+    os.makedirs(save_dir, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     dataset = HiCStructureDataset(
-        root_dir=ROOT_DIR,
-        hic_dirname=HIC_DIRNAME,
-        struct_dirname=STRUCT_DIRNAME,
+        root_dir=data_dir,
         expected_size=SEQ_LEN,
     )
 
     dataloader = DataLoader(
         dataset,
-        batch_size=args.batch_size,
+        batch_size=batch_size,
         shuffle=True,
         collate_fn=partial(collate_fn, train=True),
-        num_workers=NUM_WORKERS,
+        num_workers=num_workers,
         pin_memory=True,
     )
 
-    if args.model == "vae1d":
+    if model_name == "resnet-vae":
         model = StructureAutoencoderKL1D(
             in_channels=IN_CHANNELS, 
-            num_res_blocks=18, 
-            use_downsample=args.use_seq_compression
+            num_res_blocks=num_res_blocks, 
+            use_downsample=use_seq_compression
         ).to(device)
 
         def forward_batch(x):
@@ -128,28 +134,28 @@ def main():
         def forward_batch(x):
             return model(x)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     bce_mask = torch.nn.BCEWithLogitsLoss().to(device)
 
     wandb.init(
-        project="diffbacchrom-vae",
-        name=args.run_name,
+        project=proj_name,
+        name=run_name,
         config=dict(
-            epochs=args.epochs,
-            batch_size=args.batch_size,
+            epochs=epochs,
+            batch_size=batch_size,
             seq_len=SEQ_LEN,
-            lr=args.lr,
-            kl_weight=args.kl_weight,
-            lambda_mask=args.mask_weight,
-            model=args.model,
+            lr=lr,
+            kl_weight=kl_weight,
+            lambda_mask=mask_weight,
+            model=model,
         ),
     )
     
     global_step = 0
     
-    total_steps = args.epochs * len(dataloader)
+    total_steps = epochs * len(dataloader)
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(1, epochs + 1):
         model.train()
 
         total_loss = 0
@@ -168,7 +174,7 @@ def main():
             
             # lambda_mask = LAMBDA_MASK * (0.1 + 0.9 * (1 - batch_idx / total_steps))
             loss, coord_loss, mask_loss, kl = compute_vae_losses(
-                x, recon_x, mu, logvar, bce_mask, kl_weight=args.kl_weight, lambda_mask=args.mask_weight
+                x, recon_x, mu, logvar, bce_mask, kl_weight=kl_weight, lambda_mask=mask_weight
             )
 
             loss.backward()
@@ -235,7 +241,7 @@ def main():
         )
 
         if epoch % 5 == 0:
-            ckpt_path = f"{SAVE_DIR}/epoch_{epoch:03d}.pt"
+            ckpt_path = f"{save_dir}/epoch_{epoch:03d}.pt"
             torch.save(
                 {"epoch": epoch, "model": model.state_dict(), "optimizer": optimizer.state_dict()},
                 ckpt_path,

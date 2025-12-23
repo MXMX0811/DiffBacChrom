@@ -20,7 +20,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from models.mmdit import DiT_models as MMDiT_models  # noqa: E402
-from models.vae1d import StructureAutoencoderKL1D  # noqa: E402
+from models.resnet_vae import StructureAutoencoderKL1D  # noqa: E402
 from data.dataset import HiCStructureDataset, collate_fn  # noqa: E402
 
 

@@ -14,15 +14,11 @@ class HiCStructureDataset(Dataset):
     def __init__(
         self,
         root_dir: str = "data",
-        hic_dirname: str = "Hi-C",
-        struct_dirname: str = "structure",
         hic_ext: str = ".tsv",
         struct_ext: str = ".tsv",
         expected_size: int = 928,
     ):
         """
-        接口保持不变，但现在实际文件结构为：
-
         root_dir/
           Pair_1/
             Pair_1_sim_hic_freq.tsv
@@ -31,14 +27,9 @@ class HiCStructureDataset(Dataset):
           Pair_2/
             Pair_2_sim_hic_freq.tsv
             ...
-
-        不再使用 hic_dirname / struct_dirname 这两个子目录，而是直接在 root_dir 下寻找 Pair_* 文件夹。
         """
         super().__init__()
         self.root_dir = root_dir
-        # 下面这两个属性保留以兼容旧接口，但不再用于路径拼接
-        self.hic_dir = os.path.join(root_dir, hic_dirname)
-        self.struct_root_dir = os.path.join(root_dir, struct_dirname)
 
         self.hic_ext = hic_ext
         self.struct_ext = struct_ext

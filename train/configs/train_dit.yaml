@@ -1,16 +1,17 @@
-# Defaults mirrored from scripts/train_dit.py
+# Defaults mirrored from train/train_dit.py
 paths:
   root_dir: data/train
   hic_dirname: Hi-C
   struct_dirname: structure
-  vae_ckpt: checkpoints/vae/epoch_040.pt
+  vae_ckpt: null  # auto -> checkpoints/vae/sdvae1dfinal.pt if compressed else vae1dfinal.pt
   save_dir: null  # auto -> checkpoints/dit/<model>-<size> when null
 
 model:
-  name: CrossDiT  # choices: CrossDiT, JointAttDiT, MMDiTX
-  size: S         # choices: S, B, L, XL
-  use_global_cond: true
-  gradient_checkpointing: true
+  name: JointAttDiT  # choices: CrossDiT, JointAttDiT, MMDiTX
+  size: L            # choices: S, B, L, XL
+  use_seq_compression: true  # required for JointAttDiT and MMDiTX
+  use_global_cond: false     # CrossDiT only
+  grad_cp: true              # gradient checkpointing flag
 
 training:
   epochs: 50
@@ -19,12 +20,11 @@ training:
   weight_decay: 0.0
   latent_scale: 1.335256
   sample_steps: 50
-  warmup_steps: null  # auto -> 0 for CrossDiT else 1000
+  warmup_steps: null  # auto -> 0 for CrossDiT else 1000 (enables cosine when >0)
   clip_grad_norm: 1.0
-  scheduler: cosine  # warmup + cosine decay; null keeps constant lr
   num_workers: 4
   pin_memory: true
-  precision: fp32
+  precision: null  # auto -> fp32 for CrossDiT else fp16
 
 inference_preview:
   batch_size: 10

@@ -1,0 +1,21 @@
+# ResNet VAE with 0x downsampling for basic CrossDiT
+paths:
+  data_dir: data/train
+  save_dir: checkpoints/vae/resnet-vae
+
+model:
+  name: resnet-vae
+  num_res_blocks: 18  # resnet-18
+  use_seq_compression: false
+
+training:
+  epochs: 50
+  batch_size: 32
+  lr: 1e-4
+  kl_weight: 5e-3
+  mask_weight: 1.0
+  num_workers: 4
+
+logging:
+  proj_name: diffbacchrom-vae
+  run_name: resnet-vae
