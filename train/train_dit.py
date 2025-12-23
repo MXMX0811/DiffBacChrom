@@ -194,7 +194,7 @@ def main():
     struct_lookup = {os.path.basename(s_path): s_path for _, s_path in dataset.samples}
 
     if args.model == "CrossDiT":
-        vae = StructureAutoencoderKL1D(use_downsample=args.use_seq_compression).to(device)
+        vae = StructureAutoencoderKL1D().to(device)
     else:
         vae = SDVAE().to(device)
         
@@ -209,7 +209,7 @@ def main():
         model_fn = CrossDiT_models[dit_size_key]
         model_kwargs = {
             "input_size": seq_len,
-            "in_channels": vae.z_channels,
+            "in_channels": 16,
             "use_global_cond": args.use_global_cond,
             "seq_compression": args.use_seq_compression,
             "gradient_checkpointing": args.grad_cp,
@@ -218,14 +218,14 @@ def main():
         model_fn = MMDiT_models[dit_size_key]
         model_kwargs = {
             "input_size": seq_len,
-            "in_channels": vae.z_channels,
+            "in_channels": 16,
             "gradient_checkpointing": args.grad_cp,
         }
     elif args.model == "MMDiTX":
         model_fn = MMDiTX_models[dit_size_key]
         model_kwargs = {
             "input_size": seq_len,
-            "in_channels": vae.z_channels,
+            "in_channels": 16,
         }
     else:
         raise ValueError(f"Unsupported model type: {args.model}")
