@@ -22,8 +22,9 @@ from models.crossdit import DiT_models as CrossDiT_models
 from models.mmdit import DiT_models as MMDiT_models
 from models.mmditx import DiT_models as MMDiTX_models
 from models.resnet_vae import StructureAutoencoderKL1D
+from models.sd_vae import SDVAE
 from data.dataset import HiCStructureDataset, collate_fn
-from .rf import RF
+from rf import RF
 
 
 def rebuild_structure_tables(
@@ -192,7 +193,11 @@ def main():
     # lookup for structure file paths so we can restore column names
     struct_lookup = {os.path.basename(s_path): s_path for _, s_path in dataset.samples}
 
-    vae = StructureAutoencoderKL1D().to(device)
+    if args.model == "CrossDiT":
+        vae = StructureAutoencoderKL1D(use_downsample=args.use_seq_compression).to(device)
+    else:
+        vae = SDVAE().to(device)
+        
     ckpt = torch.load(args.vae_ckpt, map_location="cpu")
     vae.load_state_dict(ckpt["model"])
     vae.eval()
