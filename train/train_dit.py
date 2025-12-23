@@ -1,4 +1,5 @@
 import argparse
+import yaml
 import os
 from functools import partial
 from typing import Dict, List
@@ -86,9 +87,8 @@ def get_scheduler(opt, warmup_steps=1000, total_steps=10000):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--root_dir", type=str, default="data/train")
-    parser.add_argument("--hic_dirname", type=str, default="Hi-C")
-    parser.add_argument("--struct_dirname", type=str, default="structure")
+    parser.add_argument("--config", type=str, default=None)
+    parser.add_argument("--data_dir", type=str, default="data/train")
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -152,6 +152,13 @@ def main():
 
     if args.save_dir is None:
         args.save_dir = os.path.join("checkpoints", "dit", args.model + "-" + args.size)
+    
+    if args.config:
+        with open(args.config) as f:
+            cfg = yaml.safe_load(f)
+        for k, v in cfg.items():
+            if hasattr(args, k):
+                setattr(args, k, v)
         
     os.makedirs(args.save_dir, exist_ok=True)
 
@@ -163,11 +170,7 @@ def main():
         args.precision = "fp32"
         use_amp = False
 
-    dataset = HiCStructureDataset(
-        root_dir=args.root_dir,
-        hic_dirname=args.hic_dirname,
-        struct_dirname=args.struct_dirname,
-    )
+    dataset = HiCStructureDataset(root_dir=args.data_dir)
 
     # Infer sequence length W from first sample (structure and Hi-C should match)
     first_hic_path, first_struct_path = dataset.samples[0]
@@ -203,6 +206,7 @@ def main():
             "input_size": seq_len,
             "in_channels": vae.z_channels,
             "use_global_cond": args.use_global_cond,
+            "seq_compression": args.use_seq_compression,
             "gradient_checkpointing": args.grad_cp,
         }
     elif args.model == "JointAttDiT":
