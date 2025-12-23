@@ -7,15 +7,15 @@ latent_scale: 1.335256
 sample_steps: 50
 
 model: JointAttDiT
-size: B               # S, B, L, XL
+size: L               # S, B, L, XL
 use_seq_compression: true
 use_global_cond: false
-grad_cp: false
+grad_cp: true
 
 cfg_scale: 1.5
 warmup_steps: 0
 precision: fp16
 
 vae_ckpt: checkpoints/vae/sd-vae/final.pt
-save_dir: checkpoints/dit/JointAttDiT-B
-run_name: JointAttDiT-B
+save_dir: checkpoints/dit/JointAttDiT-L
+run_name: JointAttDiT-L

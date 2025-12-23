@@ -10,7 +10,7 @@ model: CrossDiT
 size: L               # S, B, L, XL
 use_seq_compression: false
 use_global_cond: true
-grad_cp: false
+grad_cp: true
 
 cfg_scale: 1.0
 warmup_steps: 0

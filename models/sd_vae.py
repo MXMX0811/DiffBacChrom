@@ -376,14 +376,14 @@ class SDVAE(torch.nn.Module):
         self.encoder = VAEEncoder(dtype=dtype, device=device)
         self.decoder = VAEDecoder(dtype=dtype, device=device)
 
-    @torch.autocast("cuda", dtype=torch.float16)
+    # @torch.autocast("cuda", dtype=torch.float16)
     def decode(self, z_seq):
         """Input: (B, W, C) -> (B, W, C)"""
         z_cwt = z_seq.permute(0, 2, 1)
         x_cwt = self.decoder(z_cwt)
         return x_cwt.permute(0, 2, 1)
 
-    @torch.autocast("cuda", dtype=torch.float16)
+    # @torch.autocast("cuda", dtype=torch.float16)
     def encode(self, x_seq):
         """Input: (B, W, C) -> return latent_dist, mu, logvar (all seq-last)"""
         x_cwt = x_seq.permute(0, 2, 1)
