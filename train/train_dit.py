@@ -89,7 +89,8 @@ def get_scheduler(opt, warmup_steps=1000, total_steps=10000):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default=None)
-    parser.add_argument("--data_dir", type=str, default="data/train")
+    parser.add_argument("--train_dir", type=str, default="data/train")
+    parser.add_argument("--val_dir", type=str, default="data/test")
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -171,27 +172,38 @@ def main():
         args.precision = "fp32"
         use_amp = False
 
-    dataset = HiCStructureDataset(root_dir=args.data_dir)
+    train_set = HiCStructureDataset(root_dir=args.train_dir)
+    val_set = HiCStructureDataset(root_dir=args.val_dir)
 
     # Infer sequence length W from first sample (structure and Hi-C should match)
-    first_hic_path, first_struct_path = dataset.samples[0]
-    seq_len_struct = dataset._load_structure_seq(first_struct_path).shape[0]
-    seq_len_hic = dataset._load_hic_matrix(first_hic_path).shape[-1]
+    first_hic_path, first_struct_path = train_set.samples[0]
+    seq_len_struct = train_set._load_structure_seq(first_struct_path).shape[0]
+    seq_len_hic = train_set._load_hic_matrix(first_hic_path).shape[-1]
     if seq_len_struct != seq_len_hic:
         raise ValueError(f"Mismatch between structure length ({seq_len_struct}) and Hi-C size ({seq_len_hic})")
     seq_len = seq_len_struct
     print(f"Inferred sequence length: W={seq_len}")
+    
     dataloader = DataLoader(
-        dataset,
+        train_set,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=4,
         pin_memory=True,
         collate_fn=partial(collate_fn, train=True),
     )
+    
+    val_dataloader = DataLoader(
+        val_set,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+        collate_fn=partial(collate_fn, train=False),
+    )
 
     # lookup for structure file paths so we can restore column names
-    struct_lookup = {os.path.basename(s_path): s_path for _, s_path in dataset.samples}
+    struct_lookup = {os.path.basename(s_path): s_path for _, s_path in train_set.samples}
 
     if not args.use_seq_compression:
         vae = StructureAutoencoderKL1D().to(device)
@@ -302,7 +314,7 @@ def main():
         rf.model.eval()
         with torch.no_grad():
             vis_loader = DataLoader(
-                dataset,
+                train_set,
                 batch_size=10,
                 shuffle=True,
                 num_workers=0,
