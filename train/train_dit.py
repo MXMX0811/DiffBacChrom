@@ -310,41 +310,21 @@ def main():
         print(f"Epoch [{epoch+1}/{args.epochs}] Loss: {avg_loss:.6f}")
         wandb.log({"epoch_loss": avg_loss, "epoch": epoch + 1})
 
-        # ---------- inference sample ----------
         rf.model.eval()
+        val_loss = 0.0
         with torch.no_grad():
-            vis_loader = DataLoader(
-                train_set,
-                batch_size=10,
-                shuffle=True,
-                num_workers=0,
-                collate_fn=partial(collate_fn, train=False),
-            )
-            batch = next(iter(vis_loader))
-            hic = batch["hic"].to(device)
-            sample_ids = batch["sample_id"]
-            structure_files = batch["structure_file"]
+            for val_batch in val_dataloader:
+                hic = val_batch["hic"].to(device)
+                structure = val_batch["structure"].to(device)
 
-            seq_len = hic.shape[-1]
-            
-            sample_latent = rf.sample(
-                hic, 
-                sample_steps=args.sample_steps, 
-                shape=(hic.shape[0], seq_len, vae.z_channels), 
-                cfg_scale=args.cfg_scale
-            )
-            with amp.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
-                decoded = vae.decode(sample_latent / args.latent_scale)  # (B,W,16) in normalized space
-            decoded = apply_mask_threshold(decoded)
-            decoded_cpu = decoded.cpu()
+                z = vae.encode(structure).latent_dist.sample().mul_(args.latent_scale)
+                with amp.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
+                    loss = rf.forward(z, hic)
+                val_loss += loss.item()
 
-            rebuild_structure_tables(
-                decoded_cpu,
-                sample_ids,
-                structure_files,
-                struct_lookup,
-                output_dir=os.path.join(args.save_dir, f"samples_epoch{epoch+1:03d}"),
-            )
+        avg_val_loss = val_loss / len(val_dataloader)
+        print(f"Validation Loss: {avg_val_loss:.6f}")
+        wandb.log({"val/loss": avg_val_loss, "epoch": epoch + 1})
 
         ckpt_payload = {
             "epoch": epoch + 1,
