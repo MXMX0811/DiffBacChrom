@@ -27,47 +27,6 @@ from data.dataset import HiCStructureDataset, collate_fn
 from rf import RF
 
 
-def rebuild_structure_tables(
-    struct_denorm: torch.Tensor,
-    sample_ids: List[str],
-    structure_files: List[str],
-    struct_lookup: Dict[str, str],
-    output_dir: str,
-):
-    """
-    Rebuild TSVs matching the original format: for each hic_index two rows (bead1, bead2).
-    struct_denorm: (B, W, 16) on CPU
-    struct_lookup: kept for API compatibility (unused)
-    """
-    os.makedirs(output_dir, exist_ok=True)
-    columns = ["hic_index", "x1", "y1", "z1", "mask1", "x2", "y2", "z2", "mask2"]
-
-    for b_idx, sid in enumerate(sample_ids):
-        tokens = struct_denorm[b_idx].cpu().numpy()  # (W,16)
-        rows: List[List[float]] = []
-        for hic_idx, token in enumerate(tokens):
-            row1_vals = token[:8].tolist()
-            row2_vals = token[8:].tolist()
-            rows.append([hic_idx] + row1_vals)
-            rows.append([hic_idx] + row2_vals)
-
-        df = pd.DataFrame(rows, columns=columns)
-        out_path = os.path.join(output_dir, f"{sid}_recon.tsv")
-        df.to_csv(out_path, sep="\t", index=False)
-        print(f"Saved reconstruction to {out_path}")
-
-
-def apply_mask_threshold(struct: torch.Tensor) -> torch.Tensor:
-    """
-    Binarize mask channels (>0.5 -> 1, otherwise 0) and zero coordinates where mask is 0.
-    Expects last dimension ordered as (x, y, z, mask) repeated 4 times.
-    """
-    struct_view = struct.reshape(*struct.shape[:-1], 4, 4)
-    masks = (struct_view[..., 3] > 0.5).float()
-    struct_view[..., 3] = masks
-    struct_view[..., 0:3] = struct_view[..., 0:3] * masks.unsqueeze(-1)
-    return struct_view.reshape(struct.shape)
-
 def count_params(module: torch.nn.Module, trainable_only: bool = True) -> int:
     """Return parameter count; include frozen params when trainable_only=False."""
     return sum(p.numel() for p in module.parameters() if (p.requires_grad or not trainable_only))
