@@ -1,5 +1,6 @@
 import einops
 import torch
+import torch.utils.checkpoint as cp
 
 
 def Normalize(in_channels, num_groups=32, dtype=torch.float32, device=None):
@@ -151,15 +152,17 @@ class Downsample(torch.nn.Module):
 class CNNEncoder(torch.nn.Module):
     def __init__(
         self,
-        ch=128,
-        ch_mult=(1, 2, 4, 4),
+        ch=64,
+        ch_mult=(1, 2, 4),
         num_res_blocks=2,
         in_channels=1,
         z_channels=16,
         dtype=torch.float32,
+        gradient_checkpointing=True,
         device=None,
     ):
         super().__init__()
+        self.gradient_checkpointing = gradient_checkpointing
         self.num_resolutions = len(ch_mult)
         self.num_res_blocks = num_res_blocks
         # downsampling
@@ -218,20 +221,34 @@ class CNNEncoder(torch.nn.Module):
         )
         self.swish = torch.nn.SiLU(inplace=True)
 
+    @torch.autocast("cuda", dtype=torch.float16)
     def forward(self, x):
         # downsampling
         hs = [self.conv_in(x)]
         for i_level in range(self.num_resolutions):
             for i_block in range(self.num_res_blocks):
-                h = self.down[i_level].block[i_block](hs[-1])
+                block = self.down[i_level].block[i_block]
+                if self.gradient_checkpointing:
+                    h = cp.checkpoint(block, hs[-1], use_reentrant=False)
+                else:
+                    h = block(hs[-1])
                 hs.append(h)
             if i_level != self.num_resolutions - 1:
-                hs.append(self.down[i_level].downsample(hs[-1]))
+                downsample = self.down[i_level].downsample
+                if self.gradient_checkpointing:
+                    hs.append(cp.checkpoint(downsample, hs[-1], use_reentrant=False))
+                else:
+                    hs.append(downsample(hs[-1]))
         # middle
         h = hs[-1]
-        h = self.mid.block_1(h)
-        h = self.mid.attn_1(h)
-        h = self.mid.block_2(h)
+        if self.gradient_checkpointing:
+            h = cp.checkpoint(self.mid.block_1, h, use_reentrant=False)
+            h = cp.checkpoint(self.mid.attn_1, h, use_reentrant=False)
+            h = cp.checkpoint(self.mid.block_2, h, use_reentrant=False)
+        else:
+            h = self.mid.block_1(h)
+            h = self.mid.attn_1(h)
+            h = self.mid.block_2(h)
         # end
         h = self.norm_out(h)
         h = self.swish(h)

@@ -31,7 +31,6 @@ def count_params(module: torch.nn.Module, trainable_only: bool = True) -> int:
     """Return parameter count; include frozen params when trainable_only=False."""
     return sum(p.numel() for p in module.parameters() if (p.requires_grad or not trainable_only))
 
-
 def format_params(n: int) -> str:
     return f"{n:,} ({n / 1e6:.2f}M)"
 
@@ -160,9 +159,6 @@ def main():
         pin_memory=True,
         collate_fn=partial(collate_fn, train=False),
     )
-
-    # lookup for structure file paths so we can restore column names
-    struct_lookup = {os.path.basename(s_path): s_path for _, s_path in train_set.samples}
 
     if not args.use_seq_compression:
         vae = StructureAutoencoderKL1D().to(device)

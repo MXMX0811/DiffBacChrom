@@ -8,7 +8,7 @@ latent_scale: 1.335256
 sample_steps: 50
 
 model: CrossDiT
-size: L               # S, B, L, XL
+size: S               # S, B, L, XL
 use_seq_compression: true
 use_global_cond: true
 grad_cp: true
@@ -18,5 +18,5 @@ warmup_steps: 0
 precision: fp16
 
 vae_ckpt: checkpoints/vae/sd-vae/final.pt
-save_dir: checkpoints/dit/CrossDiT-L 
-run_name: CrossDiT-L-compression
+save_dir: checkpoints/dit/CrossDiT-S 
+run_name: CrossDiT-S-compression
