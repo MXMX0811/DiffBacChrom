@@ -151,7 +151,7 @@ class DiT(nn.Module):
         use_global_cond: bool = True,
         learn_sigma: bool = True,
         gradient_checkpointing: bool = True,   # allow gradient checkpointing to save memory
-        seq_compression: bool = True,
+        seq_compression: bool = False,
     ):
         super().__init__()
         self.gradient_checkpointing = gradient_checkpointing
