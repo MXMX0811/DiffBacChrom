@@ -175,7 +175,7 @@ def main():
     if args.model == "CrossDiT":
         model_fn = CrossDiT_models[dit_size_key]
         model_kwargs = {
-            "input_size": seq_len // (4 if args.use_seq_compression else 1),
+            "input_size": seq_len,
             "in_channels": 16,
             "use_global_cond": args.use_global_cond,
             "seq_compression": args.use_seq_compression,
@@ -184,14 +184,14 @@ def main():
     elif args.model == "JointAttDiT":
         model_fn = MMDiT_models[dit_size_key]
         model_kwargs = {
-            "input_size": seq_len // 4,
+            "input_size": seq_len,
             "in_channels": 16,
             "gradient_checkpointing": args.grad_cp,
         }
     elif args.model == "MMDiTX":
         model_fn = MMDiTX_models[dit_size_key]
         model_kwargs = {
-            "input_size": seq_len // 4,
+            "input_size": seq_len,
             "in_channels": 16,
         }
     else:

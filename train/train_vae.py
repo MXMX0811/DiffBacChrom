@@ -121,8 +121,7 @@ def main():
     if model_name == "resnet-vae":
         model = StructureAutoencoderKL1D(
             in_channels=IN_CHANNELS, 
-            num_res_blocks=num_res_blocks, 
-            use_downsample=use_seq_compression
+            num_res_blocks=num_res_blocks
         ).to(device)
 
         def forward_batch(x):
