@@ -105,22 +105,22 @@ def resolve_use_global_cond(args, ckpt_data):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--hic_path", type=str, default="data/train/Pair_10/Pair_10_sim_hic_freq.tsv", help="Path to Hi-C tsv (e.g., data/train/Pair_X/Pair_X_sim_hic_freq.tsv)")
+    parser.add_argument("--hic_path", type=str, default="data/test/Pair_66/Pair_66_sim_hic_freq.tsv", help="Path to Hi-C tsv (e.g., data/train/Pair_X/Pair_X_sim_hic_freq.tsv)")
     parser.add_argument("--dit_ckpt", type=str, default=None, help="DiT checkpoint path")
-    parser.add_argument("--vae_ckpt", type=str, default="checkpoints/vae/epoch_040.pt", help="VAE checkpoint path")
+    parser.add_argument("--vae_ckpt", type=str, default="checkpoints/vae/resnet-vae/final.pt", help="VAE checkpoint path")
     parser.add_argument("--sample_steps", type=int, default=50, help="RF sampling steps")
-    parser.add_argument("--model", type=str, default="MMDiT", choices=["CrossDiT", "MMDiT"], help="Select backbone model")
+    parser.add_argument("--model", type=str, default="CrossDiT", choices=["CrossDiT", "MMDiT"], help="Select backbone model")
     parser.add_argument(
         "--size",
         type=lambda s: s.upper(),
-        default="B",
+        default="L",
         choices=["S", "B", "L", "XL"],
         help="DiT model size (S/B/L/XL)",
     )
     parser.add_argument("--cfg_scale", type=float, default=1.0, help="Classifier-free guidance scale for inference")
     parser.add_argument("--num_samples", type=int, default=500, help="Number of sequences to generate")
     parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
-    parser.add_argument("--output_root", type=str, default="outputs/dit_samples", help="Output root directory")
+    parser.add_argument("--output_root", type=str, default=None, help="Output root directory")
     parser.add_argument(
         "--use_global_cond",
         type=str2bool,
@@ -132,7 +132,9 @@ def main():
     if args.cfg_scale is None:
         args.cfg_scale = 1.5 if args.model == "MMDiT" else 1.0
     if args.dit_ckpt is None:
-        args.dit_ckpt = os.path.join("checkpoints", "dit", args.model + args.size, "epoch_016.pt")
+        args.dit_ckpt = os.path.join("checkpoints", "dit", args.model + '-' + args.size, "final.ckpt")
+    if args.output_root is None:
+        args.output_root = os.path.join("outputs", "dit_samples", args.model + '-' + args.size)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -182,7 +184,7 @@ def main():
 
     # replicate hic for batch sampling
     # generate in smaller batches and save incrementally
-    batch_size = min(50, args.num_samples)
+    batch_size = 1
     remaining = args.num_samples
 
     saved_count = 0
