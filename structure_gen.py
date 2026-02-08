@@ -184,7 +184,7 @@ def main():
 
     # replicate hic for batch sampling
     # generate in smaller batches and save incrementally
-    batch_size = 1
+    batch_size = 10
     remaining = args.num_samples
 
     saved_count = 0
