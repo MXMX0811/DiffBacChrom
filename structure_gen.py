@@ -44,19 +44,41 @@ def load_hic_matrix(hic_path: str) -> torch.Tensor:
 
 def save_structures(struct_denorm: torch.Tensor, out_dir: str, start_idx: int = 0):
     """
-    struct_denorm: (B, W, 16) on CPU
+    struct_denorm: (B, W, 16) or compatible shape on CPU
     start_idx: global offset so filenames do not collide across batches
     """
     os.makedirs(out_dir, exist_ok=True)
-    for b_idx in range(struct_denorm.shape[0]):
-        tokens = struct_denorm[b_idx].cpu().numpy()  # (W,16)
+
+    if not isinstance(struct_denorm, torch.Tensor):
+        struct_denorm = torch.as_tensor(struct_denorm)
+
+    struct = struct_denorm
+    if struct.ndim == 2:
+        struct = struct.unsqueeze(0)
+    elif struct.ndim == 4 and struct.shape[-2:] == (4, 4):
+        struct = struct.reshape(struct.shape[0], struct.shape[1], 16)
+    elif struct.ndim == 4 and struct.shape[1] == 1 and struct.shape[-1] == 16:
+        struct = struct.squeeze(1)
+
+    if struct.ndim != 3 or struct.shape[-1] != 16:
+        raise ValueError(f"Expected struct shape (B, W, 16); got {tuple(struct.shape)}")
+
+    start_idx = int(start_idx)
+    if start_idx < 0:
+        raise ValueError(f"start_idx must be >= 0; got {start_idx}")
+
+    for b_idx in range(struct.shape[0]):
+        tokens = struct[b_idx].cpu().numpy()  # (W,16)
         rows: List[List[float]] = []
         for hic_idx, token in enumerate(tokens):
             row1_vals = token[:8].tolist()
             row2_vals = token[8:].tolist()
             rows.append([hic_idx] + row1_vals)
             rows.append([hic_idx] + row2_vals)
-        df = pd.DataFrame(rows, columns=["hic_index", "x1", "y1", "z1", "mask1", "x2", "y2", "z2", "mask2"])
+        df = pd.DataFrame(
+            rows,
+            columns=["hic_index", "x1", "y1", "z1", "mask1", "x2", "y2", "z2", "mask2"],
+        )
         out_path = os.path.join(out_dir, f"sample_{start_idx + b_idx + 1:04d}.tsv")
         df.to_csv(out_path, sep="\t", index=False)
         print(f"Saved {out_path}")
@@ -193,10 +215,10 @@ def main():
         cur_bs = min(batch_size, remaining)
         hic_batch = hic.repeat(cur_bs, 1, 1, 1)  # (cur_bs,1,W,W)
         sample_latent = rf.sample(
-            hic, 
-            sample_steps=args.sample_steps, 
-            shape=(hic.shape[0], seq_len, vae.z_channels), 
-            cfg_scale=args.cfg_scale
+            hic_batch,
+            sample_steps=args.sample_steps,
+            shape=(cur_bs, seq_len, vae.z_channels),
+            cfg_scale=args.cfg_scale,
         )
         decoded = vae.decode(sample_latent / args.latent_scale)  # normalized space
         decoded = apply_mask_threshold(decoded)
