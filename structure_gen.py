@@ -96,7 +96,7 @@ def apply_mask_threshold(struct: torch.Tensor) -> torch.Tensor:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--hic_path", type=str, default="data/test/Pair_71/Pair_71_sim_hic_freq.tsv", help="Path to Hi-C tsv (e.g., data/train/Pair_X/Pair_X_sim_hic_freq.tsv)")
+    parser.add_argument("--hic_path", type=str, default="data/test/Pair_74/Pair_74_sim_hic_freq.tsv", help="Path to Hi-C tsv (e.g., data/train/Pair_X/Pair_X_sim_hic_freq.tsv)")
     parser.add_argument("--dit_ckpt", type=str, default=None, help="DiT checkpoint path")
     parser.add_argument("--vae_ckpt", type=str, default="checkpoints/vae/resnet-vae/final.pt", help="VAE checkpoint path")
     parser.add_argument("--sample_steps", type=int, default=50, help="RF sampling steps")
@@ -104,7 +104,7 @@ def main():
     parser.add_argument(
         "--size",
         type=lambda s: s.upper(),
-        default="L",
+        default="S",
         choices=["S", "B", "L", "XL"],
         help="DiT model size (S/B/L/XL)",
     )

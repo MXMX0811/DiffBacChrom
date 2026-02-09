@@ -5,4 +5,5 @@ data/train
 outputs/*
 wandb
 checkpoints
+eval_plotting
 __pycache__
