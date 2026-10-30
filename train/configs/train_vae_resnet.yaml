@@ -1,4 +1,4 @@
-# ResNet VAE with 0x downsampling for basic CrossDiT
+# ResNet VAE without sequence downsampling for basic CrossDiT
 paths:
   data_dir: data/train
   save_dir: checkpoints/vae/resnet-vae
@@ -6,7 +6,6 @@ paths:
 model:
   name: resnet-vae
   num_res_blocks: 18  # resnet-18
-  use_seq_compression: false
 
 training:
   epochs: 50

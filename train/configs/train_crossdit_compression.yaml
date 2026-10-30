@@ -4,7 +4,7 @@ val_dir: data/test
 epochs: 50
 batch_size: 8
 lr: 0.0001
-latent_scale: 1.335256
+latent_scale: 1.335256  # Existing value; validate for the selected SD VAE before experiments.
 sample_steps: 50
 
 model: CrossDiT
@@ -17,6 +17,6 @@ cfg_scale: 1.0
 warmup_steps: 0
 precision: fp16
 
-vae_ckpt: checkpoints/vae/sd-vae/final.pt
-save_dir: checkpoints/dit/CrossDiT-S 
+vae_ckpt: null  # Supply the selected epoch_XXX.pt here or with --vae_ckpt.
+save_dir: checkpoints/dit/CrossDiT-S-compression
 run_name: CrossDiT-S-compression

@@ -1,3 +1,9 @@
+"""Standalone training demonstration of intermediate-layer condition tokens.
+
+Model weights are updated while collecting visualizations. Formal training
+experiments use train/train_dit.py.
+"""
+
 import argparse
 import os
 import sys
@@ -22,62 +28,11 @@ if PROJECT_ROOT not in sys.path:
 from models.mmdit import DiT_models as MMDiT_models  # noqa: E402
 from models.resnet_vae import StructureAutoencoderKL1D  # noqa: E402
 from data.dataset import HiCStructureDataset, collate_fn  # noqa: E402
-
-
-class RF:
-    """
-    Same RF loss as scripts/train_dit.py, but with an option to return cond_trace for visualization.
-    """
-    def __init__(self, model: torch.nn.Module):
-        self.model = model
-
-    def forward(self, data_latent: torch.Tensor, hic: torch.Tensor) -> torch.Tensor:
-        b = data_latent.size(0)
-        t = torch.rand((b,), device=data_latent.device)
-        texp = t.view([b, *([1] * (data_latent.dim() - 1))])
-
-        noise = torch.randn_like(data_latent)
-        zt = (1 - texp) * data_latent + texp * noise
-
-        vtheta = self.model(zt, t, hic)
-        B, C, T = vtheta.shape
-        assert C % 2 == 0
-        C_half = C // 2
-        vtheta, _ = torch.split(vtheta, C_half, dim=1)
-        vtheta = vtheta.permute(0, 2, 1)  # (B, W, C_half)
-
-        batchwise_mse = ((noise - data_latent - vtheta) ** 2).mean(dim=list(range(1, len(data_latent.shape))))
-        return batchwise_mse.mean()
-
-    def forward_with_trace(self, data_latent: torch.Tensor, hic: torch.Tensor) -> Tuple[torch.Tensor, List[torch.Tensor]]:
-        """
-        Identical to forward(), but grabs cond_trace from model output (training branch of mmdit).
-        """
-        b = data_latent.size(0)
-        t = torch.rand((b,), device=data_latent.device)
-        texp = t.view([b, *([1] * (data_latent.dim() - 1))])
-
-        noise = torch.randn_like(data_latent)
-        zt = (1 - texp) * data_latent + texp * noise
-
-        vtheta, cond_trace = self.model(zt, t, hic)  # training branch returns (out, cond_trace)
-        B, C, T = vtheta.shape
-        assert C % 2 == 0
-        C_half = C // 2
-        vtheta, _ = torch.split(vtheta, C_half, dim=1)
-        vtheta = vtheta.permute(0, 2, 1)  # (B, W, C_half)
-
-        batchwise_mse = ((noise - data_latent - vtheta) ** 2).mean(dim=list(range(1, len(data_latent.shape))))
-        loss = batchwise_mse.mean()
-        return loss, cond_trace
+from train.rf import RF
 
 
 def build_dataloader(args: argparse.Namespace) -> Tuple[DataLoader, int]:
-    dataset = HiCStructureDataset(
-        root_dir=args.root_dir,
-        hic_dirname=args.hic_dirname,
-        struct_dirname=args.struct_dirname,
-    )
+    dataset = HiCStructureDataset(root_dir=args.root_dir)
 
     first_hic_path, first_struct_path = dataset.samples[0]
     seq_len_struct = dataset._load_structure_seq(first_struct_path).shape[0]
@@ -187,10 +142,8 @@ def plot_tsne(cond_trace: List[torch.Tensor], seed: int) -> plt.Figure:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Visualize MMDiT cond_trace with t-SNE.")
+    parser = argparse.ArgumentParser(description="Train JointAttDiT to demonstrate intermediate-layer condition tokens with t-SNE.")
     parser.add_argument("--root_dir", type=str, default="data/train")
-    parser.add_argument("--hic_dirname", type=str, default="Hi-C")
-    parser.add_argument("--struct_dirname", type=str, default="structure")
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--latent_scale", type=float, default=1.335256)
     parser.add_argument(
@@ -213,13 +166,13 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional path to a JointAttDiT checkpoint. Leave empty to train from scratch.",
     )
-    parser.add_argument("--vae_ckpt", type=str, default="checkpoints/vae/epoch_040.pt")
+    parser.add_argument("--vae_ckpt", type=str, required=True)
     parser.add_argument("--tsne_seed", type=int, default=42)
     parser.add_argument("--train_steps", type=int, default=1000, help="Number of training steps to run.")
     parser.add_argument("--log_interval", type=int, default=100, help="Plot and log t-SNE every N steps.")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--run_name", type=str, default="cond_trace_tsne")
-    parser.add_argument("--grad_cp", type=bool, default=True)
+    parser.add_argument("--grad_cp", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
         "--precision",
         type=str,
@@ -243,9 +196,7 @@ def main():
         args.precision = "fp16"
     use_amp = args.precision == "fp16" and device.type == "cuda"
     if args.precision == "fp16" and device.type != "cuda":
-        print("AMP selected but CUDA is not available; falling back to fp32.")
-        args.precision = "fp32"
-        use_amp = False
+        raise ValueError("fp16 training requires CUDA; select --precision fp32 on CPU")
 
     dataloader, seq_len = build_dataloader(args)
     vae, model = load_models(args, seq_len, device)
@@ -280,9 +231,13 @@ def main():
         structure = batch["structure"].to(device)
         z = prepare_latents(structure, vae, args.latent_scale)
 
+        collect_trace = (global_step + 1) % args.log_interval == 0 or (global_step + 1) == args.train_steps
         optimizer.zero_grad()
         with amp.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
-            loss, cond_trace = rf.forward_with_trace(z, hic)
+            if collect_trace:
+                loss, cond_trace = rf.forward(z, hic, return_trace=True)
+            else:
+                loss = rf.forward(z, hic)
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -291,7 +246,7 @@ def main():
 
         log_data = {"train/loss": loss.item(), "step": global_step + 1}
 
-        if (global_step + 1) % args.log_interval == 0 or (global_step + 1) == args.train_steps:
+        if collect_trace:
             fig = plot_tsne(cond_trace, seed=args.tsne_seed + global_step)
             log_data["cond_trace_tsne"] = wandb.Image(fig, caption=f"step {global_step+1}")
             plt.close(fig)

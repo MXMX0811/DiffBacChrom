@@ -4,11 +4,9 @@ import shutil
 import sys
 from typing import List
 
-import numpy as np
 import pandas as pd
 import torch
 from tqdm import tqdm
-import matplotlib.pyplot as plt
 
 PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
 if PROJECT_ROOT not in sys.path:
@@ -18,17 +16,6 @@ from models.crossdit import DiT_models as CrossDiT_models
 from models.mmdit import DiT_models as MMDiT_models
 from models.resnet_vae import StructureAutoencoderKL1D
 from train.rf import RF
-
-
-def str2bool(v):
-    if isinstance(v, bool):
-        return v
-    if isinstance(v, str):
-        if v.lower() in ("yes", "true", "t", "1"):
-            return True
-        if v.lower() in ("no", "false", "f", "0"):
-            return False
-    raise argparse.ArgumentTypeError("Boolean value expected.")
 
 
 def load_hic_matrix(hic_path: str) -> torch.Tensor:
@@ -85,7 +72,7 @@ def save_structures(struct_denorm: torch.Tensor, out_dir: str, start_idx: int = 
 
 def apply_mask_threshold(struct: torch.Tensor) -> torch.Tensor:
     """
-    Binarize mask channels (>0.5 -> 1, otherwise 0) and zero coordinates where mask is 0.
+    Binarize decoder mask logits (>0.5 -> 1, otherwise 0) and zero coordinates where mask is 0.
     Expects last dimension ordered as (x, y, z, mask) repeated 4 times.
     """
     struct_view = struct.reshape(*struct.shape[:-1], 4, 4)  # (..., 4 beads, xyz+mask)
@@ -94,13 +81,13 @@ def apply_mask_threshold(struct: torch.Tensor) -> torch.Tensor:
     struct_view[..., 0:3] = struct_view[..., 0:3] * masks.unsqueeze(-1)
     return struct_view.reshape(struct.shape)
 
-def main():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--hic_path", type=str, default="data/test/Pair_74/Pair_74_sim_hic_freq.tsv", help="Path to Hi-C tsv (e.g., data/train/Pair_X/Pair_X_sim_hic_freq.tsv)")
     parser.add_argument("--dit_ckpt", type=str, default=None, help="DiT checkpoint path")
-    parser.add_argument("--vae_ckpt", type=str, default="checkpoints/vae/resnet-vae/final.pt", help="VAE checkpoint path")
+    parser.add_argument("--vae_ckpt", type=str, required=True, help="Path to the selected ResNet VAE checkpoint")
     parser.add_argument("--sample_steps", type=int, default=50, help="RF sampling steps")
-    parser.add_argument("--model", type=str, default="CrossDiT", choices=["CrossDiT", "MMDiT"], help="Select backbone model")
+    parser.add_argument("--model", type=str, default="CrossDiT", choices=["CrossDiT", "JointAttDiT"], help="Select backbone model")
     parser.add_argument(
         "--size",
         type=lambda s: s.upper(),
@@ -112,20 +99,27 @@ def main():
     parser.add_argument("--num_samples", type=int, default=500, help="Number of sequences to generate")
     parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
     parser.add_argument("--output_root", type=str, default=None, help="Output root directory")
-    parser.add_argument("--use_global_cond", type=bool, default=True, help="Whether CrossDiT uses global conditioning (CrossDiT only)")
-    args = parser.parse_args()
+    parser.add_argument("--use_global_cond", action=argparse.BooleanOptionalAction, default=None, help="Whether CrossDiT uses global conditioning (CrossDiT only)")
+    parser.add_argument("--batch_size", type=int, default=10, help="Number of structures per sampling batch")
+    args = parser.parse_args(argv)
     
-    if args.model != "CrossDiT":
-        if args.use_global_cond:
-            print("Warning: --use_global_cond is only supported when model=CrossDiT; disabled.")
-            args.use_global_cond = False
-    if args.cfg_scale is None:
-        args.cfg_scale = 1.5 if args.model == "MMDiT" else 1.0
+    if args.use_global_cond is None:
+        args.use_global_cond = args.model == "CrossDiT"
+    if args.model != "CrossDiT" and args.use_global_cond:
+        parser.error("use_global_cond is supported only by CrossDiT")
+    if args.batch_size <= 0 or args.sample_steps <= 0 or args.num_samples <= 0:
+        parser.error("batch_size, sample_steps and num_samples must be positive")
     if args.dit_ckpt is None:
         args.dit_ckpt = os.path.join("checkpoints", "dit", args.model + '-' + args.size, "final.ckpt")
     if args.output_root is None:
         args.output_root = os.path.join("outputs", "dit_samples", args.model + '-' + args.size)
 
+    return args
+
+
+@torch.no_grad()
+def main():
+    args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -153,7 +147,7 @@ def main():
             "use_global_cond": args.use_global_cond,
             "gradient_checkpointing": False,
         }
-    elif args.model == "MMDiT":
+    elif args.model == "JointAttDiT":
         model_fn = MMDiT_models[dit_size_key]
         model_kwargs = {
             "input_size": seq_len,
@@ -173,13 +167,12 @@ def main():
 
     # replicate hic for batch sampling
     # generate in smaller batches and save incrementally
-    batch_size = 10
     remaining = args.num_samples
 
     saved_count = 0
     pbar = tqdm(total=args.num_samples, desc="Generating samples")
     while remaining > 0:
-        cur_bs = min(batch_size, remaining)
+        cur_bs = min(args.batch_size, remaining)
         hic_batch = hic.repeat(cur_bs, 1, 1, 1)  # (cur_bs,1,W,W)
         sample_latent = rf.sample(
             hic_batch,

@@ -94,7 +94,7 @@ class DiTBlock(nn.Module):
             nn.Linear(hidden_size, 15 * hidden_size)
         )
 
-    def forward(self, x, t, cond_tokens):
+    def forward(self, x, t, cond_tokens, return_trace=False):
         """
         x: (B, T_latent, D)
         c: (B, D)               # timestep embedding + global cond
@@ -122,7 +122,7 @@ class DiTBlock(nn.Module):
         
         # For condition entanglement analysis, return updated cond_tokens
         # Used in visualize_cond_trace.py
-        cond_post_attn = cond_tokens.detach().cpu()
+        cond_post_attn = cond_tokens.detach().cpu() if return_trace else None
 
         # Per-modality MLP updates
         x = x + gate_mlp_x.unsqueeze(1) * self.mlp(modulate(self.norm2_x(x), shift_mlp_x, scale_mlp_x))
@@ -249,100 +249,31 @@ class DiT(nn.Module):
         imgs = x.permute(0, 2, 1)  # (N, C, T)
         return imgs
 
-    def forward(self, x, t, H, cfg_scale: float = 1.0):
+    def forward(self, x, t, H, force_drop_ids=None, return_trace=False):
+        """Predict (B, C_out, T), optionally with condition traces on CPU.
+
+        Traces contain the initial Hi-C tokens and each block's tokens after
+        joint attention, before its condition MLP (the original trace points).
         """
-        Unified forward for SD3-style MM-DiT.
+        cond_tokens = self.hic_encoder(H, train=self.training, force_drop_ids=force_drop_ids)
+        cond_trace = [cond_tokens.detach().cpu()] if return_trace else None
 
-        Args:
-            x: (N, T, C_in)
-            t: (N,)
-            H: (N, C_hic, W, W)
-            cfg_scale: guidance scale (1.0 = no CFG)
-
-        Returns:
-            (N, out_channels, T)
-        """
-        # For tracing condition tokens
-        cond_trace = []
-        
-        # --------------------------------------------------
-        # Case 1: training OR no guidance
-        # --------------------------------------------------
-        if self.training or cfg_scale == 1.0:
-            # Hi-C tokens (with dropout during training)
-            cond_tokens = self.hic_encoder(H, train=self.training)
-            
-            cond_trace.append(cond_tokens.detach().cpu())
-
-            # latent embedding
-            x = self.x_embedder(x)
-            x = x + self.pos_embed.to(x.dtype)
-
-            # timestep embedding
-            t_emb = self.t_embedder(t)
-
-            # joint MM-DiT blocks
-            for block in self.blocks:
-                if self.gradient_checkpointing and self.training:
-                    x, cond_tokens, cond_post_attn = cp.checkpoint(
-                        block, x, t_emb, cond_tokens, use_reentrant=False
-                    )
-                else:
-                    x, cond_tokens, cond_post_attn = block(x, t_emb, cond_tokens)
-                cond_trace.append(cond_post_attn)
-
-            x = self.final_layer(x, t_emb)
-            return self.unpatchify(x), cond_trace
-
-        # --------------------------------------------------
-        # Case 2: CFG inference (SD3-style joint MM-DiT)
-        # --------------------------------------------------
-        N = x.shape[0]
-        assert N % 2 == 0, "CFG requires even batch size"
-        half = N // 2
-
-        # split inputs
-        x_half = x[:half]
-        t_half = t[:half]
-        H_half = H[:half]
-
-        # duplicate latents and timesteps
-        x = torch.cat([x_half, x_half], dim=0)
-        t = torch.cat([t_half, t_half], dim=0)
-
-        # conditional / unconditional Hi-C tokens
-        cond_tokens = self.hic_encoder.encode(H_half)
-        uncond_tokens = self.hic_encoder.null_tokens(
-            half, dtype=cond_tokens.dtype, device=cond_tokens.device
-        )
-        cond_tokens = torch.cat([cond_tokens, uncond_tokens], dim=0)
-        
-        cond_trace.append(cond_tokens.detach().cpu())
-
-        # latent embedding
         x = self.x_embedder(x)
         x = x + self.pos_embed.to(x.dtype)
-
-        # timestep embedding
         t_emb = self.t_embedder(t)
 
-        # joint MM-DiT blocks (cond_tokens WILL be updated)
         for block in self.blocks:
-            x, cond_tokens, cond_post_attn = block(x, t_emb, cond_tokens)
-            cond_trace.append(cond_post_attn)
+            if self.gradient_checkpointing and self.training:
+                x, cond_tokens, cond_post_attn = cp.checkpoint(
+                    block, x, t_emb, cond_tokens, return_trace, use_reentrant=False
+                )
+            else:
+                x, cond_tokens, cond_post_attn = block(x, t_emb, cond_tokens, return_trace)
+            if return_trace:
+                cond_trace.append(cond_post_attn)
 
-        # output
-        x = self.final_layer(x, t_emb)
-        x = self.unpatchify(x)
-
-        # split cond / uncond outputs
-        x_cond, x_uncond = torch.split(x, half, dim=0)
-
-        # classifier-free guidance
-        x_guided = x_uncond + cfg_scale * (x_cond - x_uncond)
-
-        # return full batch (SD-style sampler compatibility)
-        return torch.cat([x_guided, x_guided], dim=0), cond_trace
+        x = self.unpatchify(self.final_layer(x, t_emb))
+        return (x, cond_trace) if return_trace else x
 
 
 #################################################################################

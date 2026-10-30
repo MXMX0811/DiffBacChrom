@@ -221,7 +221,6 @@ class CNNEncoder(torch.nn.Module):
         )
         self.swish = torch.nn.SiLU(inplace=True)
 
-    @torch.autocast("cuda", dtype=torch.float16)
     def forward(self, x):
         # downsampling
         hs = [self.conv_in(x)]

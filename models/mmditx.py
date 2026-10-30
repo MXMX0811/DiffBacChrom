@@ -771,8 +771,6 @@ class MMDiTX(nn.Module):
         x: torch.Tensor,
         t: torch.Tensor,
         H: torch.Tensor,
-        cfg_scale: float = 1.0,
-        return_full_batch: bool = True,
         force_drop_ids: Optional[torch.Tensor] = None,
         y: Optional[torch.Tensor] = None,
         context: Optional[torch.Tensor] = None,
@@ -788,59 +786,17 @@ class MMDiTX(nn.Module):
         seq_len = x.shape[1]
         pos = self.get_pos_embed(seq_len).to(dtype=x.dtype, device=x.device)
 
-        if (cfg_scale == 1.0) or self.training:
-            cond_tokens = self.hic_encoder(H, train=self.training, force_drop_ids=force_drop_ids)
+        cond_tokens = self.hic_encoder(H, train=self.training, force_drop_ids=force_drop_ids)
 
-            x = self.x_embedder(x)
-            x = x + pos
-            t_emb = self.t_embedder(t, dtype=x.dtype)
-            if y is not None and self.y_embedder is not None:
-                y_emb = self.y_embedder(y)
-                t_emb = t_emb + y_emb
-
-            context_tokens = self.context_embedder(cond_tokens if context is None else context)
-
-            x = self.forward_core_with_concat(x, t_emb, context_tokens, skip_layers, controlnet_hidden_states)
-            x = self.unpatchify(x, seq_len=seq_len)
-            return x
-
-        # CFG inference path
-        N = x.shape[0]
-        assert N % 2 == 0, "CFG requires even batch size"
-        half = N // 2
-
-        x_half = x[:half]
-        t_half = t[:half]
-        H_half = H[:half]
-
-        combined_x = torch.cat([x_half, x_half], dim=0)
-        combined_t = torch.cat([t_half, t_half], dim=0)
-
-        cond_half = self.hic_encoder.encode(H_half)
-        uncond_half = self.hic_encoder.null_tokens(
-            half, dtype=cond_half.dtype, device=cond_half.device
-        )
-        combined_cond = torch.cat([cond_half, uncond_half], dim=0)
-
-        x = self.x_embedder(combined_x)
+        x = self.x_embedder(x)
         x = x + pos
-        t_emb = self.t_embedder(combined_t, dtype=x.dtype)
+        t_emb = self.t_embedder(t, dtype=x.dtype)
         if y is not None and self.y_embedder is not None:
-            y_cond, y_uncond = torch.split(y, half, dim=0)
-            y_emb = torch.cat([y_cond, y_uncond], dim=0)
-            t_emb = t_emb + self.y_embedder(y_emb)
+            t_emb = t_emb + self.y_embedder(y)
 
-        context_tokens = self.context_embedder(combined_cond if context is None else context)
-
+        context_tokens = self.context_embedder(cond_tokens if context is None else context)
         x = self.forward_core_with_concat(x, t_emb, context_tokens, skip_layers, controlnet_hidden_states)
-        x = self.unpatchify(x, seq_len=seq_len)
-
-        cond_out, uncond_out = torch.split(x, half, dim=0)
-        guided = uncond_out + cfg_scale * (cond_out - uncond_out)
-
-        if return_full_batch:
-            return torch.cat([guided, guided], dim=0)
-        return guided
+        return self.unpatchify(x, seq_len=seq_len)
 
     def initialize_weights(self):
         # Initialize transformer layers:

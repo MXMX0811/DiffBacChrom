@@ -17,6 +17,6 @@ cfg_scale: 1.0
 warmup_steps: 0
 precision: fp16
 
-vae_ckpt: checkpoints/vae/resnet-vae/final.pt
+vae_ckpt: null  # Supply the selected epoch_XXX.pt here or with --vae_ckpt.
 save_dir: checkpoints/dit/CrossDiT-L 
 run_name: CrossDiT-L

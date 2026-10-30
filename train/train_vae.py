@@ -73,6 +73,16 @@ def load_config(path):
         return yaml.safe_load(f)
 
 
+def build_model(model_config):
+    if model_config["name"] == "resnet-vae":
+        return StructureAutoencoderKL1D(
+            in_channels=16, num_res_blocks=int(model_config["num_res_blocks"])
+        )
+    if model_config["name"] == "sd-vae":
+        return SDVAE()
+    raise ValueError(f"Unsupported VAE: {model_config['name']}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
@@ -83,8 +93,6 @@ def main():
     save_dir = config["paths"]["save_dir"]
     
     model_name = config["model"]["name"]
-    num_res_blocks = int(config["model"]["num_res_blocks"])
-    use_seq_compression = bool(config["model"]["use_seq_compression"])
     
     epochs = int(config["training"]["epochs"])
     batch_size = int(config["training"]["batch_size"])
@@ -97,7 +105,6 @@ def main():
     run_name = config["logging"]["run_name"]
         
     SEQ_LEN = 928
-    IN_CHANNELS = 16
 
     os.makedirs(save_dir, exist_ok=True)
 
@@ -118,20 +125,7 @@ def main():
         pin_memory=True,
     )
 
-    if model_name == "resnet-vae":
-        model = StructureAutoencoderKL1D(
-            in_channels=IN_CHANNELS, 
-            num_res_blocks=num_res_blocks
-        ).to(device)
-
-        def forward_batch(x):
-            return model(x)
-
-    else:
-        model = SDVAE(dtype=torch.float32, device=device).to(device)
-
-        def forward_batch(x):
-            return model(x)
+    model = build_model(config["model"]).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     bce_mask = torch.nn.BCEWithLogitsLoss().to(device)
@@ -146,7 +140,7 @@ def main():
             lr=lr,
             kl_weight=kl_weight,
             lambda_mask=mask_weight,
-            model=model,
+            model=model_name,
         ),
     )
     
@@ -169,7 +163,7 @@ def main():
             x = batch["structure"].to(device)  # (B,928,16)
 
             optimizer.zero_grad()
-            recon_x, mu, logvar = forward_batch(x)
+            recon_x, mu, logvar = model(x)
             
             # lambda_mask = LAMBDA_MASK * (0.1 + 0.9 * (1 - batch_idx / total_steps))
             loss, coord_loss, mask_loss, kl = compute_vae_losses(

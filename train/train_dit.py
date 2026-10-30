@@ -24,7 +24,7 @@ from models.mmditx import DiT_models as MMDiTX_models
 from models.resnet_vae import StructureAutoencoderKL1D
 from models.sd_vae import SDVAE
 from data.dataset import HiCStructureDataset, collate_fn
-from rf import RF
+from train.rf import RF
 
 
 def count_params(module: torch.nn.Module, trainable_only: bool = True) -> int:
@@ -44,7 +44,7 @@ def get_scheduler(opt, warmup_steps=1000, total_steps=10000):
     return LambdaLR(opt, lr_lambda)
 
 
-def main():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--train_dir", type=str, default="data/train")
@@ -62,10 +62,10 @@ def main():
         choices=["S", "B", "L", "XL"],
         help="DiT model size (S/B/L/XL)",
     )
-    parser.add_argument("--use_seq_compression", type=bool, default=False)
-    parser.add_argument("--use_global_cond", type=bool, default=True, help="Whether CrossDiT uses global conditioning (CrossDiT only)")
+    parser.add_argument("--use_seq_compression", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--use_global_cond", action=argparse.BooleanOptionalAction, default=None, help="Whether CrossDiT uses global conditioning (CrossDiT only)")
     parser.add_argument("--cfg_scale", type=float, default=None, help="Classifier-free guidance scale for inference")
-    parser.add_argument("--grad_cp", type=bool, default=True, help="Use gradient checkpointing to save memory")
+    parser.add_argument("--grad_cp", action=argparse.BooleanOptionalAction, default=None, help="Use gradient checkpointing to save memory")
     parser.add_argument("--save_dir", type=str, default=None, help="Checkpoint directory (default: checkpoints/dit/<model>)")
     parser.add_argument("--vae_ckpt", type=str, default=None)
     parser.add_argument("--run_name", type=str, default="rf_dit_structure")
@@ -82,53 +82,54 @@ def main():
         choices=["fp32", "fp16"],
         help="Precision strategy: fp32 or autocast (fp16). Default: CrossDiT->fp32, others->fp16.",
     )
-    args = parser.parse_args()
-
-    if args.cfg_scale is None:
-        args.cfg_scale = 1.0 if args.model == "CrossDiT" else 1.5
-    if args.warmup_steps is None:
-        args.warmup_steps = 0 if args.model == "CrossDiT" else 1000
-    if args.precision is None:
-        args.precision = "fp32" if args.model == "CrossDiT" else "fp16"
-        
-    if args.model != "CrossDiT":
-        if args.use_global_cond:
-            print("Warning: --use_global_cond is only supported when model=CrossDiT; disabled.")
-            args.use_global_cond = False
-        if not args.use_seq_compression:
-            print("Warning: --use_seq_compression must be True for JointAttDiT and MMDiTX; enabled.")
-            args.use_seq_compression = True
-            
-    if args.model == "MMDiTX":        
-        if args.grad_cp:
-            print("Warning: --grad_cp is only supported when model=CrossDiT or JointAttDiT; disabled.")
-            args.grad_cp = False
-    
-    if args.vae_ckpt is None:
-        if args.use_seq_compression:
-            args.vae_ckpt = os.path.join("checkpoints", "vae", "sdvae1d" + "final.pt")
-        else:
-            args.vae_ckpt = os.path.join("checkpoints", "vae", "vae1d" + "final.pt")
-
-    if args.save_dir is None:
-        args.save_dir = os.path.join("checkpoints", "dit", args.model + "-" + args.size)
-    
-    if args.config:
-        with open(args.config) as f:
+    config_args, _ = parser.parse_known_args(argv)
+    if config_args.config:
+        with open(config_args.config, encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
-        for k, v in cfg.items():
-            if hasattr(args, k):
-                setattr(args, k, v)
-        
+        unknown = cfg.keys() - vars(config_args).keys()
+        if unknown:
+            parser.error(f"Unknown configuration options: {', '.join(sorted(unknown))}")
+        parser.set_defaults(**cfg)
+    args = parser.parse_args(argv)
+
+    # Resolve model-dependent defaults only after YAML and explicit CLI options.
+    is_crossdit = args.model == "CrossDiT"
+    if args.use_seq_compression is None:
+        args.use_seq_compression = not is_crossdit
+    if args.use_global_cond is None:
+        args.use_global_cond = is_crossdit
+    if args.grad_cp is None:
+        args.grad_cp = args.model != "MMDiTX"
+    if args.cfg_scale is None:
+        args.cfg_scale = 1.0 if is_crossdit else 1.5
+    if args.warmup_steps is None:
+        args.warmup_steps = 0 if is_crossdit else 1000
+    if args.precision is None:
+        args.precision = "fp32" if is_crossdit else "fp16"
+
+    if not is_crossdit and args.use_global_cond:
+        parser.error("use_global_cond is supported only by CrossDiT")
+    if not is_crossdit and not args.use_seq_compression:
+        parser.error("JointAttDiT and MMDiTX training currently require use_seq_compression")
+    if args.model == "MMDiTX" and args.grad_cp:
+        parser.error("grad_cp is not implemented for MMDiTX")
+    if args.vae_ckpt is None:
+        parser.error("Set vae_ckpt in YAML or pass --vae_ckpt with the selected VAE checkpoint")
+    if args.save_dir is None:
+        suffix = "-compression" if is_crossdit and args.use_seq_compression else ""
+        args.save_dir = os.path.join("checkpoints", "dit", args.model + "-" + args.size + suffix)
+    return args
+
+
+def main():
+    args = parse_args()
     os.makedirs(args.save_dir, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     use_amp = args.precision == "fp16" and device.type == "cuda"
     if args.precision == "fp16" and device.type != "cuda":
-        print("AMP selected but CUDA is not available; falling back to fp32.")
-        args.precision = "fp32"
-        use_amp = False
+        raise ValueError("fp16 training requires CUDA; select --precision fp32 on CPU")
 
     train_set = HiCStructureDataset(root_dir=args.train_dir)
     val_set = HiCStructureDataset(root_dir=args.val_dir)

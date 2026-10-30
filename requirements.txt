@@ -34,6 +34,7 @@ wandb==0.19.8
 tqdm==4.66.1
 
 # Misc helpers
+PyYAML==6.0.2
 safetensors==0.5.3
 huggingface-hub==0.34.4
 thop==0.1.1.post2209072238
