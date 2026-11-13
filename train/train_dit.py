@@ -19,7 +19,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from models.crossdit import DiT_models as CrossDiT_models
-from models.mambadit import DiT_models as MambaDiT_models
+from models.dimamba import DiMamba_models
 from models.mmdit import DiT_models as MMDiT_models
 from models.mmditx import DiT_models as MMDiTX_models
 from models.resnet_vae import StructureAutoencoderKL1D
@@ -55,7 +55,7 @@ def build_parser():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
     parser.add_argument("--sample_steps", type=int, default=50, help="RF sampling steps")
-    parser.add_argument("--model", type=str, default="JointAttDiT", choices=["CrossDiT", "JointAttDiT", "MMDiTX", "MambaDiT"], help="Select backbone model")
+    parser.add_argument("--model", type=str, default="JointAttDiT", choices=["CrossDiT", "JointAttDiT", "MMDiTX", "DiMamba"], help="Select backbone model")
     parser.add_argument(
         "--size",
         type=lambda s: s.upper(),
@@ -64,7 +64,7 @@ def build_parser():
         help="DiT model size (S/B/L/XL)",
     )
     parser.add_argument("--use_seq_compression", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--use_global_cond", action=argparse.BooleanOptionalAction, default=None, help="Whether CrossDiT/MambaDiT uses global conditioning")
+    parser.add_argument("--use_global_cond", action=argparse.BooleanOptionalAction, default=None, help="Whether CrossDiT/DiMamba uses global conditioning")
     parser.add_argument("--cfg_scale", type=float, default=None, help="Classifier-free guidance scale for inference")
     parser.add_argument("--grad_cp", action=argparse.BooleanOptionalAction, default=None, help="Use gradient checkpointing to save memory")
     parser.add_argument("--save_dir", type=str, default=None, help="Checkpoint directory (default: checkpoints/dit/<model>)")
@@ -81,7 +81,7 @@ def build_parser():
         type=str,
         default=None,
         choices=["fp32", "fp16"],
-        help="Precision strategy: fp32 or autocast (fp16). Default: CrossDiT/MambaDiT->fp32, joint models->fp16.",
+        help="Precision strategy: fp32 or autocast (fp16). Default: CrossDiT/DiMamba->fp32, joint models->fp16.",
     )
     return parser
 
@@ -99,7 +99,7 @@ def parse_config(parser, argv=None):
     args = parser.parse_args(argv)
 
     # Resolve model-dependent defaults only after YAML and explicit CLI options.
-    is_cross_model = args.model in ("CrossDiT", "MambaDiT")
+    is_cross_model = args.model in ("CrossDiT", "DiMamba")
     if args.use_seq_compression is None:
         args.use_seq_compression = not is_cross_model
     if args.use_global_cond is None:
@@ -114,7 +114,7 @@ def parse_config(parser, argv=None):
         args.precision = "fp32" if is_cross_model else "fp16"
 
     if not is_cross_model and args.use_global_cond:
-        parser.error("use_global_cond is supported only by CrossDiT and MambaDiT")
+        parser.error("use_global_cond is supported only by CrossDiT and DiMamba")
     if not is_cross_model and not args.use_seq_compression:
         parser.error("JointAttDiT and MMDiTX training currently require use_seq_compression")
     if args.model == "MMDiTX" and args.grad_cp:
@@ -151,8 +151,8 @@ def load_models(args, seq_len, device):
 
     latent_size = seq_len // vae.downsample_factor
     dit_size_key = f"DiT-{args.size}"
-    if args.model in ("CrossDiT", "MambaDiT"):
-        models = CrossDiT_models if args.model == "CrossDiT" else MambaDiT_models
+    if args.model in ("CrossDiT", "DiMamba"):
+        models = CrossDiT_models if args.model == "CrossDiT" else DiMamba_models
         model_fn = models[dit_size_key]
         model_kwargs = {
             "input_size": seq_len,

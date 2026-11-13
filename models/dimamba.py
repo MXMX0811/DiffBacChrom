@@ -1,4 +1,4 @@
-"""CrossDiT with bidirectional Mamba-2 in place of self-attention."""
+"""Diffusion Mamba with bidirectional Mamba-2 and CrossDiT conditioning."""
 
 from functools import partial
 
@@ -24,14 +24,14 @@ class BidirectionalMamba2(nn.Module):
         return (forward + backward) * 0.5
 
 
-class MambaDiTBlock(DiTBlock):
+class DiMambaBlock(DiTBlock):
     def __init__(self, hidden_size, num_heads, mlp_ratio=4.0):
         super().__init__(hidden_size, num_heads, mlp_ratio,
                          self_attn=BidirectionalMamba2(hidden_size))
 
 
 # Reuse the same S/B/L/XL widths, depths and cross-attention heads.
-DiT_models = {
-    name: partial(model_fn, block_type=MambaDiTBlock)
+DiMamba_models = {
+    name: partial(model_fn, block_type=DiMambaBlock)
     for name, model_fn in CrossDiT_models.items()
 }

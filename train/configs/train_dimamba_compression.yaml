@@ -8,7 +8,7 @@ lr: 0.0001
 latent_scale: 1.335256  # Existing value; validate for the selected SD VAE before experiments.
 sample_steps: 50
 
-model: MambaDiT
+model: DiMamba
 size: S               # S, B, L, XL
 use_seq_compression: true
 use_global_cond: true
@@ -19,5 +19,5 @@ warmup_steps: 0
 precision: fp16
 
 vae_ckpt: null  # Supply the selected epoch_XXX.pt here or with --vae_ckpt.
-save_dir: checkpoints/dit/MambaDiT-S-compression
-run_name: MambaDiT-S-compression
+save_dir: checkpoints/dit/DiMamba-S-compression
+run_name: DiMamba-S-compression
