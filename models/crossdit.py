@@ -13,6 +13,13 @@ def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
+def init_linear(module):
+    if isinstance(module, nn.Linear):
+        nn.init.xavier_uniform_(module.weight)
+        if module.bias is not None:
+            nn.init.constant_(module.bias, 0)
+
+
 #################################################################################
 #                         Embedding Layers for Timesteps                        #
 #################################################################################
@@ -69,11 +76,13 @@ class DiTBlock(nn.Module):
       - MLP
       - adaLN-zero modulation
     """
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0):
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, self_attn=None):
         super().__init__()
         
         self.norm1 = nn.LayerNorm(hidden_size, eps=1e-6)
-        self.self_attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True)
+        self.init_self_attn = self_attn is None
+        self.self_attn = (Attention(hidden_size, num_heads=num_heads, qkv_bias=True)
+                          if self_attn is None else self_attn)
 
         self.norm_cross = nn.LayerNorm(hidden_size, eps=1e-6)
         # Cross attention
@@ -91,6 +100,12 @@ class DiTBlock(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden_size, 9 * hidden_size)  # 9 groups needed now
         )
+
+    def initialize_weights(self):
+        # Custom sequence mixers retain their library initialization.
+        for name, module in self.named_children():
+            if name != "self_attn" or self.init_self_attn:
+                module.apply(init_linear)
 
     def forward(self, x, c, cond_tokens):
         """
@@ -153,6 +168,7 @@ class DiT(nn.Module):
         learn_sigma: bool = True,
         gradient_checkpointing: bool = True,   # allow gradient checkpointing to save memory
         seq_compression: bool = False,
+        block_type=DiTBlock,
     ):
         super().__init__()
         self.gradient_checkpointing = gradient_checkpointing
@@ -188,20 +204,19 @@ class DiT(nn.Module):
         self.blocks = nn.ModuleList()
         for i in range(depth):
             self.blocks.append(
-                DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio)
+                block_type(hidden_size, num_heads, mlp_ratio=mlp_ratio)
             )
             
         self.final_layer = FinalLayer(hidden_size, self.out_channels)
         self.initialize_weights()
 
     def initialize_weights(self):
-        # Initialize transformer layers:
-        def _basic_init(module):
-            if isinstance(module, nn.Linear):
-                torch.nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.constant_(module.bias, 0)
-        self.apply(_basic_init)
+        # Preserve the original initialization order for CrossDiT.
+        for module in (self.x_embedder, self.t_embedder, self.hic_encoder):
+            module.apply(init_linear)
+        for block in self.blocks:
+            block.initialize_weights()
+        self.final_layer.apply(init_linear)
 
         # Initialize (and freeze) pos_embed by 1D sin-cos embedding over sequence length
         pos = get_1d_sincos_pos_embed_from_grid(

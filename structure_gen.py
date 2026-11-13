@@ -13,6 +13,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from models.crossdit import DiT_models as CrossDiT_models
+from models.mambadit import DiT_models as MambaDiT_models
 from models.mmdit import DiT_models as MMDiT_models
 from models.mmditx import DiT_models as MMDiTX_models
 from models.resnet_vae import StructureAutoencoderKL1D
@@ -89,7 +90,7 @@ def parse_args(argv=None):
     parser.add_argument("--dit_ckpt", type=str, default=None, help="DiT checkpoint path")
     parser.add_argument("--vae_ckpt", type=str, required=True, help="Path to the selected VAE checkpoint")
     parser.add_argument("--sample_steps", type=int, default=50, help="RF sampling steps")
-    parser.add_argument("--model", type=str, default="CrossDiT", choices=["CrossDiT", "JointAttDiT", "MMDiTX"], help="Select backbone model")
+    parser.add_argument("--model", type=str, default="CrossDiT", choices=["CrossDiT", "JointAttDiT", "MMDiTX", "MambaDiT"], help="Select backbone model")
     parser.add_argument(
         "--size",
         type=lambda s: s.upper(),
@@ -101,23 +102,24 @@ def parse_args(argv=None):
     parser.add_argument("--num_samples", type=int, default=500, help="Number of sequences to generate")
     parser.add_argument("--latent_scale", type=float, default=1.335256, help="Latent scale used during training")
     parser.add_argument("--output_root", type=str, default=None, help="Output root directory")
-    parser.add_argument("--use_global_cond", action=argparse.BooleanOptionalAction, default=None, help="Whether CrossDiT uses global conditioning (CrossDiT only)")
+    parser.add_argument("--use_global_cond", action=argparse.BooleanOptionalAction, default=None, help="Whether CrossDiT/MambaDiT uses global conditioning")
     parser.add_argument("--batch_size", type=int, default=10, help="Number of structures per sampling batch")
     parser.add_argument("--use_seq_compression", action=argparse.BooleanOptionalAction, default=None,
-                        help="Use SD VAE with 4x compression (default: off for CrossDiT, on for joint models)")
+                        help="Use SD VAE with 4x compression (default: off for CrossDiT/MambaDiT, on for joint models)")
     args = parser.parse_args(argv)
     
+    is_cross_model = args.model in ("CrossDiT", "MambaDiT")
     if args.use_seq_compression is None:
-        args.use_seq_compression = args.model != "CrossDiT"
-    if args.model != "CrossDiT" and not args.use_seq_compression:
+        args.use_seq_compression = not is_cross_model
+    if not is_cross_model and not args.use_seq_compression:
         parser.error("JointAttDiT and MMDiTX sampling require use_seq_compression")
     if args.use_global_cond is None:
-        args.use_global_cond = args.model == "CrossDiT"
-    if args.model != "CrossDiT" and args.use_global_cond:
-        parser.error("use_global_cond is supported only by CrossDiT")
+        args.use_global_cond = is_cross_model
+    if not is_cross_model and args.use_global_cond:
+        parser.error("use_global_cond is supported only by CrossDiT and MambaDiT")
     if args.batch_size <= 0 or args.sample_steps <= 0 or args.num_samples <= 0:
         parser.error("batch_size, sample_steps and num_samples must be positive")
-    suffix = "-compression" if args.model == "CrossDiT" and args.use_seq_compression else ""
+    suffix = "-compression" if is_cross_model and args.use_seq_compression else ""
     model_name = args.model + '-' + args.size + suffix
     if args.dit_ckpt is None:
         args.dit_ckpt = os.path.join("checkpoints", "dit", model_name, "final.ckpt")
@@ -150,8 +152,9 @@ def main():
     ckpt_data = torch.load(args.dit_ckpt, map_location="cpu")
 
     dit_size_key = f"DiT-{args.size}"
-    if args.model == "CrossDiT":
-        model_fn = CrossDiT_models[dit_size_key]
+    if args.model in ("CrossDiT", "MambaDiT"):
+        models = CrossDiT_models if args.model == "CrossDiT" else MambaDiT_models
+        model_fn = models[dit_size_key]
         model_kwargs = {
             "input_size": seq_len,
             "latent_size": latent_size,

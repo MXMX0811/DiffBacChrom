@@ -22,8 +22,8 @@ python structure_gen.py --model CrossDiT --size L \
 ```
 
 Use the same VAE checkpoint, latent scale, model size and global-condition setting
-for training and sampling. Both entry points support `CrossDiT`, `JointAttDiT`
-and `MMDiTX`. CrossDiT uses the non-compressing ResNet VAE by default; select
+for training and sampling. Both entry points support `CrossDiT`, `JointAttDiT`,
+`MMDiTX` and `MambaDiT`. CrossDiT and MambaDiT use the non-compressing ResNet VAE by default; select
 `--use_seq_compression` for its SD VAE comparison. JointAttDiT and MMDiTX use
 SD VAE compression by default, matching their training configurations.
 
@@ -33,8 +33,8 @@ The entry points derive `latent_size` from the selected VAE's downsampling facto
 
 | Branch | Hi-C input | Structure latent | Condition tokens | Position indices |
 | --- | --- | --- | --- | --- |
-| CrossDiT without compression | 928 × 928 | 928 × 16 | 928 | 0…927 |
-| Compressed CrossDiT / JointAttDiT / MMDiTX | 928 × 928 | 232 × 16 | 232 | 0…231 |
+| CrossDiT / MambaDiT without compression | 928 × 928 | 928 × 16 | 928 | 0…927 |
+| Compressed CrossDiT / MambaDiT / JointAttDiT / MMDiTX | 928 × 928 | 232 × 16 | 232 | 0…231 |
 
 Compressed sampling starts with 232 latent tokens and decodes them back to 928
 structure tokens. Each modality uses its existing embedding width on the same
@@ -54,8 +54,55 @@ The standalone trace demonstration uses the same JointAttDiT construction,
 SD VAE, latent preparation and configuration parser as formal training. Both
 structure and condition sequences therefore have 232 tokens for a 928-bin input.
 
-CPU training requires `--precision fp32`. The Hi-C CNN follows the caller's
+CPU training of the attention backbones requires `--precision fp32`. MambaDiT uses
+the official CUDA implementation described below. The Hi-C CNN follows the caller's
 autocast context instead of forcing CUDA fp16 internally.
+
+## Mamba-2 comparison
+
+`MambaDiT` reuses CrossDiT's blocks, conditioning, training and sampling. Each
+self-attention module is replaced by two independent official
+[Mamba-2 modules](https://github.com/state-spaces/mamba/blob/v2.2.6.post3/mamba_ssm/modules/mamba2.py).
+The reverse branch flips the token sequence, scans it, and restores the original
+order. The two outputs are averaged. Cross-attention, MLP, adaLN-zero and the
+global Hi-C condition follow CrossDiT. Condition tokens remain read-only across
+backbone layers. Each RF model call starts a fresh scan; no recurrent state is
+carried between sampling steps.
+
+S/B/L/XL reuse exactly the CrossDiT width, depth and cross-attention head settings.
+Mamba-2 uses `d_state=128`, `d_conv=4`, `expand=2` and `headdim=64`, retaining
+its official initialization. Parameter counts increase when replacing attention;
+the existing training log reports the actual counts.
+
+The primary comparison uses 928 latent tokens; the compressed comparison uses
+232. The two YAML files mirror their corresponding CrossDiT configurations,
+including size L for the uncompressed template and S for the compressed template.
+For a comparison between sequence lengths, select the same size and adjust the
+save directory and run name in both configurations. Use the matching VAE checkpoint
+and latent scale for each branch; the SD VAE scale still needs checkpoint-specific
+validation.
+
+Install the pinned Mamba dependencies in the Linux CUDA training environment,
+after installing the project's PyTorch version:
+
+```bash
+pip install --no-build-isolation causal-conv1d==1.5.3.post1 mamba-ssm==2.2.6.post3
+python train/train_dit.py --config train/configs/train_mambadit.yaml \
+  --vae_ckpt /path/to/resnet-vae/epoch_XXX.pt
+python train/train_dit.py --config train/configs/train_mambadit_compression.yaml \
+  --vae_ckpt /path/to/sd-vae/epoch_XXX.pt --latent_scale <selected-scale>
+python structure_gen.py --model MambaDiT --size L \
+  --vae_ckpt /path/to/resnet-vae/epoch_XXX.pt \
+  --dit_ckpt checkpoints/dit/MambaDiT-L/final.ckpt \
+  --hic_path /path/to/hic.tsv --latent_scale 1.335256 --cfg_scale 1.0
+```
+
+Compressed sampling additionally uses `--use_seq_compression`, the SD VAE and
+the size/latent scale from its training configuration. Its default checkpoint and
+output directories end in `-compression`. Other backbones can be imported and
+run without installing Mamba; the dependency is imported when a Mamba model is built.
+
+## RF sampling and condition traces
 
 CFG batching belongs to `RF.sample`: it temporarily builds an unconditional-first
 2B batch and combines the predictions into B velocities before each Euler step,
