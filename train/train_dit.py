@@ -5,7 +5,7 @@ from functools import partial
 from typing import Dict, List
 
 import pandas as pd
-import numpy as np 
+import math
 import torch
 from torch.utils.data import DataLoader
 from torch import amp
@@ -40,11 +40,11 @@ def get_scheduler(opt, warmup_steps=1000, total_steps=10000):
     def lr_lambda(step):
         if step < warmup_steps:
             return step / warmup_steps
-        return 0.5 * (1 + np.cos(np.pi * (step - warmup_steps) / (total_steps - warmup_steps)))
+        return 0.5 * (1 + math.cos(math.pi * (step - warmup_steps) / (total_steps - warmup_steps)))
     return LambdaLR(opt, lr_lambda)
 
 
-def parse_args(argv=None):
+def build_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--train_dir", type=str, default="data/train")
@@ -82,6 +82,11 @@ def parse_args(argv=None):
         choices=["fp32", "fp16"],
         help="Precision strategy: fp32 or autocast (fp16). Default: CrossDiT->fp32, others->fp16.",
     )
+    return parser
+
+
+def parse_config(parser, argv=None):
+    """Resolve the shared DiT options with CLI > YAML > defaults."""
     config_args, _ = parser.parse_known_args(argv)
     if config_args.config:
         with open(config_args.config, encoding="utf-8") as f:
@@ -121,6 +126,63 @@ def parse_args(argv=None):
     return args
 
 
+def parse_args(argv=None):
+    return parse_config(build_parser(), argv)
+
+
+@torch.no_grad()
+def prepare_latents(structure, vae, latent_scale):
+    return vae.encode(structure).latent_dist.sample().mul_(latent_scale)
+
+
+def load_models(args, seq_len, device):
+    """Build the training VAE and backbone used by both training and the trace demo."""
+    if not args.use_seq_compression:
+        vae = StructureAutoencoderKL1D().to(device)
+    else:
+        vae = SDVAE().to(device)
+        
+    ckpt = torch.load(args.vae_ckpt, map_location="cpu")
+    vae.load_state_dict(ckpt["model"])
+    vae.eval()
+    for p in vae.parameters():
+        p.requires_grad_(False)
+
+    latent_size = seq_len // vae.downsample_factor
+    dit_size_key = f"DiT-{args.size}"
+    if args.model == "CrossDiT":
+        model_fn = CrossDiT_models[dit_size_key]
+        model_kwargs = {
+            "input_size": seq_len,
+            "latent_size": latent_size,
+            "in_channels": vae.z_channels,
+            "use_global_cond": args.use_global_cond,
+            "seq_compression": args.use_seq_compression,
+            "gradient_checkpointing": args.grad_cp,
+        }
+    elif args.model == "JointAttDiT":
+        model_fn = MMDiT_models[dit_size_key]
+        model_kwargs = {
+            "input_size": seq_len,
+            "latent_size": latent_size,
+            "in_channels": vae.z_channels,
+            "gradient_checkpointing": args.grad_cp,
+        }
+    elif args.model == "MMDiTX":
+        model_fn = MMDiTX_models[dit_size_key]
+        model_kwargs = {
+            "input_size": seq_len,
+            "latent_size": latent_size,
+            "in_channels": vae.z_channels,
+        }
+    else:
+        raise ValueError(f"Unsupported model type: {args.model}")
+
+    model = model_fn(**model_kwargs).to(device)
+
+    return vae, model
+
+
 def main():
     args = parse_args()
     os.makedirs(args.save_dir, exist_ok=True)
@@ -142,7 +204,7 @@ def main():
         raise ValueError(f"Mismatch between structure length ({seq_len_struct}) and Hi-C size ({seq_len_hic})")
     seq_len = seq_len_struct
     print(f"Inferred sequence length: W={seq_len}")
-    
+
     dataloader = DataLoader(
         train_set,
         batch_size=args.batch_size,
@@ -151,7 +213,7 @@ def main():
         pin_memory=True,
         collate_fn=partial(collate_fn, train=True),
     )
-    
+
     val_dataloader = DataLoader(
         val_set,
         batch_size=args.batch_size,
@@ -161,44 +223,7 @@ def main():
         collate_fn=partial(collate_fn, train=False),
     )
 
-    if not args.use_seq_compression:
-        vae = StructureAutoencoderKL1D().to(device)
-    else:
-        vae = SDVAE().to(device)
-        
-    ckpt = torch.load(args.vae_ckpt, map_location="cpu")
-    vae.load_state_dict(ckpt["model"])
-    vae.eval()
-    for p in vae.parameters():
-        p.requires_grad_(False)
-
-    dit_size_key = f"DiT-{args.size}"
-    if args.model == "CrossDiT":
-        model_fn = CrossDiT_models[dit_size_key]
-        model_kwargs = {
-            "input_size": seq_len,
-            "in_channels": 16,
-            "use_global_cond": args.use_global_cond,
-            "seq_compression": args.use_seq_compression,
-            "gradient_checkpointing": args.grad_cp,
-        }
-    elif args.model == "JointAttDiT":
-        model_fn = MMDiT_models[dit_size_key]
-        model_kwargs = {
-            "input_size": seq_len,
-            "in_channels": 16,
-            "gradient_checkpointing": args.grad_cp,
-        }
-    elif args.model == "MMDiTX":
-        model_fn = MMDiTX_models[dit_size_key]
-        model_kwargs = {
-            "input_size": seq_len,
-            "in_channels": 16,
-        }
-    else:
-        raise ValueError(f"Unsupported model type: {args.model}")
-
-    model = model_fn(**model_kwargs).to(device)
+    vae, model = load_models(args, seq_len, device)
 
     # report parameter counts before training
     vae_params = count_params(vae, trainable_only=False)
@@ -240,8 +265,7 @@ def main():
             hic = batch["hic"].to(device)  # (B,1,W,W)
             structure = batch["structure"].to(device)  # (B,W,16)
 
-            with torch.no_grad():
-                z = vae.encode(structure).latent_dist.sample().mul_(args.latent_scale)  # (B,W,C)
+            z = prepare_latents(structure, vae, args.latent_scale)
 
             optimizer.zero_grad()
             with amp.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
@@ -273,7 +297,7 @@ def main():
                 hic = val_batch["hic"].to(device)
                 structure = val_batch["structure"].to(device)
 
-                z = vae.encode(structure).latent_dist.sample().mul_(args.latent_scale)
+                z = prepare_latents(structure, vae, args.latent_scale)
                 with amp.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
                     loss = rf.forward(z, hic)
                 val_loss += loss.item()

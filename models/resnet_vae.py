@@ -140,6 +140,7 @@ class StructureAutoencoderKL1D(nn.Module):
             dropout=dropout,
         )
         self.z_channels = z_channels
+        self.downsample_factor = 1
         self.in_channels = in_channels
 
     def encode(self, x_seq):

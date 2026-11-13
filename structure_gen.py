@@ -14,7 +14,9 @@ if PROJECT_ROOT not in sys.path:
 
 from models.crossdit import DiT_models as CrossDiT_models
 from models.mmdit import DiT_models as MMDiT_models
+from models.mmditx import DiT_models as MMDiTX_models
 from models.resnet_vae import StructureAutoencoderKL1D
+from models.sd_vae import SDVAE
 from train.rf import RF
 
 
@@ -85,9 +87,9 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--hic_path", type=str, default="data/test/Pair_74/Pair_74_sim_hic_freq.tsv", help="Path to Hi-C tsv (e.g., data/train/Pair_X/Pair_X_sim_hic_freq.tsv)")
     parser.add_argument("--dit_ckpt", type=str, default=None, help="DiT checkpoint path")
-    parser.add_argument("--vae_ckpt", type=str, required=True, help="Path to the selected ResNet VAE checkpoint")
+    parser.add_argument("--vae_ckpt", type=str, required=True, help="Path to the selected VAE checkpoint")
     parser.add_argument("--sample_steps", type=int, default=50, help="RF sampling steps")
-    parser.add_argument("--model", type=str, default="CrossDiT", choices=["CrossDiT", "JointAttDiT"], help="Select backbone model")
+    parser.add_argument("--model", type=str, default="CrossDiT", choices=["CrossDiT", "JointAttDiT", "MMDiTX"], help="Select backbone model")
     parser.add_argument(
         "--size",
         type=lambda s: s.upper(),
@@ -101,18 +103,26 @@ def parse_args(argv=None):
     parser.add_argument("--output_root", type=str, default=None, help="Output root directory")
     parser.add_argument("--use_global_cond", action=argparse.BooleanOptionalAction, default=None, help="Whether CrossDiT uses global conditioning (CrossDiT only)")
     parser.add_argument("--batch_size", type=int, default=10, help="Number of structures per sampling batch")
+    parser.add_argument("--use_seq_compression", action=argparse.BooleanOptionalAction, default=None,
+                        help="Use SD VAE with 4x compression (default: off for CrossDiT, on for joint models)")
     args = parser.parse_args(argv)
     
+    if args.use_seq_compression is None:
+        args.use_seq_compression = args.model != "CrossDiT"
+    if args.model != "CrossDiT" and not args.use_seq_compression:
+        parser.error("JointAttDiT and MMDiTX sampling require use_seq_compression")
     if args.use_global_cond is None:
         args.use_global_cond = args.model == "CrossDiT"
     if args.model != "CrossDiT" and args.use_global_cond:
         parser.error("use_global_cond is supported only by CrossDiT")
     if args.batch_size <= 0 or args.sample_steps <= 0 or args.num_samples <= 0:
         parser.error("batch_size, sample_steps and num_samples must be positive")
+    suffix = "-compression" if args.model == "CrossDiT" and args.use_seq_compression else ""
+    model_name = args.model + '-' + args.size + suffix
     if args.dit_ckpt is None:
-        args.dit_ckpt = os.path.join("checkpoints", "dit", args.model + '-' + args.size, "final.ckpt")
+        args.dit_ckpt = os.path.join("checkpoints", "dit", model_name, "final.ckpt")
     if args.output_root is None:
-        args.output_root = os.path.join("outputs", "dit_samples", args.model + '-' + args.size)
+        args.output_root = os.path.join("outputs", "dit_samples", model_name)
 
     return args
 
@@ -129,7 +139,8 @@ def main():
     out_dir = os.path.join(args.output_root, hic_basename)
     os.makedirs(out_dir, exist_ok=True)
 
-    vae = StructureAutoencoderKL1D().to(device)
+    vae = (SDVAE() if args.use_seq_compression else StructureAutoencoderKL1D()).to(device)
+    latent_size = seq_len // vae.downsample_factor
     vae_ckpt = torch.load(args.vae_ckpt, map_location="cpu")
     vae.load_state_dict(vae_ckpt["model"])
     vae.eval()
@@ -143,16 +154,26 @@ def main():
         model_fn = CrossDiT_models[dit_size_key]
         model_kwargs = {
             "input_size": seq_len,
+            "latent_size": latent_size,
             "in_channels": vae.z_channels,
             "use_global_cond": args.use_global_cond,
+            "seq_compression": args.use_seq_compression,
             "gradient_checkpointing": False,
         }
     elif args.model == "JointAttDiT":
         model_fn = MMDiT_models[dit_size_key]
         model_kwargs = {
             "input_size": seq_len,
+            "latent_size": latent_size,
             "in_channels": vae.z_channels,
             "gradient_checkpointing": False,
+        }
+    elif args.model == "MMDiTX":
+        model_fn = MMDiTX_models[dit_size_key]
+        model_kwargs = {
+            "input_size": seq_len,
+            "latent_size": latent_size,
+            "in_channels": vae.z_channels,
         }
     else:
         raise ValueError(f"Unsupported model type: {args.model}")
@@ -177,7 +198,7 @@ def main():
         sample_latent = rf.sample(
             hic_batch,
             sample_steps=args.sample_steps,
-            shape=(cur_bs, seq_len, vae.z_channels),
+            shape=(cur_bs, latent_size, vae.z_channels),
             cfg_scale=args.cfg_scale,
         )
         decoded = vae.decode(sample_latent / args.latent_scale)  # normalized space

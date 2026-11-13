@@ -157,7 +157,8 @@ class DiT(nn.Module):
     """
     def __init__(
         self,
-        input_size: int,       # sequence length (should match HiC W)
+        input_size: int,       # original Hi-C width W
+        latent_size: int,      # VAE sequence length T
         in_channels=4,
         hidden_size=1152,
         depth=28,
@@ -175,11 +176,11 @@ class DiT(nn.Module):
 
         # 1D sequence embedder
         self.x_embedder = nn.Linear(in_channels, hidden_size, bias=True)
-        self.seq_len = input_size
+        self.seq_len = latent_size
         num_patches = self.seq_len  # sequence length
 
         self.t_embedder = TimestepEmbedder(hidden_size)
-        # pass input_size from DiT to HiC encoder so W is shared
+        # Hi-C input stays at the original resolution.
         self.hic_encoder = HiCEncoder4f(
             input_size=input_size, 
             out_dim=hidden_size, 

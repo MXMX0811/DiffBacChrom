@@ -375,6 +375,8 @@ class SDVAE(torch.nn.Module):
         super().__init__()
         self.encoder = VAEEncoder(dtype=dtype, device=device)
         self.decoder = VAEDecoder(dtype=dtype, device=device)
+        self.z_channels = self.decoder.conv_in.in_channels
+        self.downsample_factor = 2 ** (self.encoder.num_resolutions - 1)
 
     # @torch.autocast("cuda", dtype=torch.float16)
     def decode(self, z_seq):

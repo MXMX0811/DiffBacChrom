@@ -594,7 +594,8 @@ class MMDiTX(nn.Module):
 
     def __init__(
         self,
-        input_size: int,
+        input_size: int,  # original Hi-C width W
+        latent_size: int,  # VAE sequence length T
         in_channels: int = 4,
         hidden_size: Optional[int] = 1152,
         depth: int = 28,
@@ -608,9 +609,6 @@ class MMDiTX(nn.Module):
         scale_mod_only: bool = False,
         swiglu: bool = False,
         out_channels: Optional[int] = None,
-        pos_embed_scaling_factor: Optional[float] = None,
-        pos_embed_offset: Optional[float] = None,
-        pos_embed_max_size: Optional[int] = None,
         hic_vit_depth: int = 4,
         hic_mlp_ratio: float = 4.0,
         hic_dropout_prob: float = 0.1,
@@ -628,9 +626,6 @@ class MMDiTX(nn.Module):
         self.in_channels = in_channels
         default_out_channels = in_channels * 2 if learn_sigma else in_channels
         self.out_channels = out_channels if out_channels is not None else default_out_channels
-        self.pos_embed_scaling_factor = pos_embed_scaling_factor
-        self.pos_embed_offset = pos_embed_offset
-        self.pos_embed_max_size = pos_embed_max_size
         self.x_block_self_attn_layers = x_block_self_attn_layers or []
 
         # use mmdit defaults by default; fall back to legacy scaling when explicit None is passed
@@ -640,10 +635,10 @@ class MMDiTX(nn.Module):
             num_heads = depth
 
         self.num_heads = num_heads
-        self.seq_len = input_size
+        self.seq_len = latent_size
 
         self.x_embedder = PatchEmbed(
-            input_size,
+            latent_size,
             in_channels,
             hidden_size,
             dtype=dtype,
@@ -672,13 +667,12 @@ class MMDiTX(nn.Module):
         else:
             self.register = None
 
-        pos_len = self.pos_embed_max_size if self.pos_embed_max_size is not None else input_size
         self.pos_embed = nn.Parameter(
-            torch.zeros(1, pos_len, hidden_size, dtype=dtype, device=device),
+            torch.zeros(1, latent_size, hidden_size, dtype=dtype, device=device),
             requires_grad=False,
         )
 
-        # Hi-C encoder (one token per bin)
+        # Hi-C encoder (one token per compressed bin)
         self.hic_encoder = HiCEncoder4f(
             input_size=input_size,
             embed_dim=hidden_size // 2,
@@ -715,14 +709,6 @@ class MMDiTX(nn.Module):
         )
 
         self.initialize_weights()
-
-    def get_pos_embed(self, seq_len: int) -> torch.Tensor:
-        if self.pos_embed.shape[1] == seq_len:
-            return self.pos_embed
-        if self.pos_embed.shape[1] > seq_len:
-            start = (self.pos_embed.shape[1] - seq_len) // 2
-            return self.pos_embed[:, start : start + seq_len, :]
-        raise ValueError(f"pos_embed length {self.pos_embed.shape[1]} smaller than requested {seq_len}")
 
     def unpatchify(self, x, seq_len: Optional[int] = None):
         """
@@ -784,7 +770,7 @@ class MMDiTX(nn.Module):
         H: (N, C_hic, W, W) Hi-C matrices
         """
         seq_len = x.shape[1]
-        pos = self.get_pos_embed(seq_len).to(dtype=x.dtype, device=x.device)
+        pos = self.pos_embed.to(dtype=x.dtype, device=x.device)
 
         cond_tokens = self.hic_encoder(H, train=self.training, force_drop_ids=force_drop_ids)
 
@@ -809,10 +795,6 @@ class MMDiTX(nn.Module):
 
         # Initialize (and freeze) pos_embed by 1D sin-cos embedding
         grid = np.arange(self.pos_embed.shape[1], dtype=np.float32)
-        if self.pos_embed_scaling_factor is not None:
-            grid = grid / self.pos_embed_scaling_factor
-        if self.pos_embed_offset is not None:
-            grid = grid - self.pos_embed_offset
         pos = get_1d_sincos_pos_embed_from_grid(
             self.pos_embed.shape[-1], grid
         )

@@ -1,7 +1,8 @@
 """Standalone training demonstration of intermediate-layer condition tokens.
 
 Model weights are updated while collecting visualizations. Formal training
-experiments use train/train_dit.py.
+experiments and this demo share model construction and latent preparation from
+train/train_dit.py.
 """
 
 import argparse
@@ -25,14 +26,16 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from models.mmdit import DiT_models as MMDiT_models  # noqa: E402
-from models.resnet_vae import StructureAutoencoderKL1D  # noqa: E402
 from data.dataset import HiCStructureDataset, collate_fn  # noqa: E402
 from train.rf import RF
+from train.train_dit import (
+    build_parser, parse_config, load_models as load_training_models,
+    prepare_latents, count_params, format_params, get_scheduler,
+)
 
 
 def build_dataloader(args: argparse.Namespace) -> Tuple[DataLoader, int]:
-    dataset = HiCStructureDataset(root_dir=args.root_dir)
+    dataset = HiCStructureDataset(root_dir=args.train_dir)
 
     first_hic_path, first_struct_path = dataset.samples[0]
     seq_len_struct = dataset._load_structure_seq(first_struct_path).shape[0]
@@ -53,45 +56,14 @@ def build_dataloader(args: argparse.Namespace) -> Tuple[DataLoader, int]:
 
 
 def load_models(args: argparse.Namespace, seq_len: int, device: torch.device):
-    vae = StructureAutoencoderKL1D().to(device)
-    ckpt = torch.load(args.vae_ckpt, map_location="cpu")
-    vae.load_state_dict(ckpt["model"])
-    vae.eval()
-    for p in vae.parameters():
-        p.requires_grad_(False)
-
-    dit_size_key = f"DiT-{args.size}"
-    model_fn = MMDiT_models[dit_size_key]
-    model = model_fn(
-        input_size=seq_len,
-        in_channels=vae.z_channels,
-        gradient_checkpointing=args.grad_cp,
-    ).to(device)
+    vae, model = load_training_models(args, seq_len, device)
 
     if args.dit_ckpt is not None:
         print(f"Loading DiT checkpoint from {args.dit_ckpt}")
         ckpt = torch.load(args.dit_ckpt, map_location="cpu")
         state_dict = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
-        missing, unexpected = model.load_state_dict(state_dict, strict=False)
-        if missing or unexpected:
-            print(f"Loaded checkpoint with missing keys: {missing} and unexpected keys: {unexpected}")
-
-    model.eval()
+        model.load_state_dict(state_dict)
     return vae, model
-
-
-def prepare_latents(structure: torch.Tensor, vae: StructureAutoencoderKL1D, latent_scale: float) -> torch.Tensor:
-    with torch.no_grad():
-        z = vae.encode(structure).latent_dist.sample().mul_(latent_scale)
-    return z
-
-
-def count_params(module: torch.nn.Module, trainable_only: bool = True) -> int:
-    return sum(p.numel() for p in module.parameters() if (p.requires_grad or not trainable_only))
-
-
-def format_params(n: int) -> str:
-    return f"{n:,} ({n / 1e6:.2f}M)"
 
 
 def plot_tsne(cond_trace: List[torch.Tensor], seed: int) -> plt.Figure:
@@ -141,59 +113,31 @@ def plot_tsne(cond_trace: List[torch.Tensor], seed: int) -> plt.Figure:
     return fig
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train JointAttDiT to demonstrate intermediate-layer condition tokens with t-SNE.")
-    parser.add_argument("--root_dir", type=str, default="data/train")
-    parser.add_argument("--batch_size", type=int, default=8)
-    parser.add_argument("--latent_scale", type=float, default=1.335256)
-    parser.add_argument(
-        "--model",
-        type=str,
-        default="JointAttDiT",
-        choices=["JointAttDiT"],
-        help="Visualization is only supported for JointAttDiT (mmdit.py).",
-    )
-    parser.add_argument(
-        "--size",
-        type=lambda s: s.upper(),
-        default="L",
-        choices=["S", "B", "L", "XL"],
-        help="DiT model size (S/B/L/XL)",
-    )
-    parser.add_argument(
-        "--dit_ckpt",
-        type=str,
-        default=None,
-        help="Optional path to a JointAttDiT checkpoint. Leave empty to train from scratch.",
-    )
-    parser.add_argument("--vae_ckpt", type=str, required=True)
+def parse_args(argv=None) -> argparse.Namespace:
+    parser = build_parser()
+    parser.description = "Train the formal JointAttDiT model while visualizing intermediate condition tokens."
+    parser.set_defaults(config=os.path.join(PROJECT_ROOT, "train", "configs", "train_mmdit.yaml"))
+    parser.add_argument("--dit_ckpt", type=str, default=None,
+                        help="Optional JointAttDiT weights to initialize the demonstration.")
     parser.add_argument("--tsne_seed", type=int, default=42)
-    parser.add_argument("--train_steps", type=int, default=1000, help="Number of training steps to run.")
+    parser.add_argument("--train_steps", type=int, default=1000, help="Number of demonstration training steps.")
     parser.add_argument("--log_interval", type=int, default=100, help="Plot and log t-SNE every N steps.")
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--run_name", type=str, default="cond_trace_tsne")
-    parser.add_argument("--grad_cp", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument(
-        "--precision",
-        type=str,
-        default=None,
-        choices=["fp32", "fp16"],
-        help="Precision strategy: fp32 or autocast (fp16). Default: fp16 for JointAttDiT.",
-    )
-    return parser.parse_args()
+    args = parse_config(parser, argv)
+    if args.model != "JointAttDiT":
+        parser.error("This condition-trace demonstration supports JointAttDiT")
+    if args.train_steps <= 0 or args.log_interval <= 0:
+        parser.error("train_steps and log_interval must be positive")
+    if not 0 <= args.warmup_steps < args.train_steps:
+        parser.error("warmup_steps must be non-negative and smaller than train_steps")
+    return args
 
 
 def main():
     args = parse_args()
 
-    if args.model != "JointAttDiT":
-        raise ValueError("Visualization requires model=JointAttDiT so that cond_trace is returned.")
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    if args.precision is None:
-        args.precision = "fp16"
     use_amp = args.precision == "fp16" and device.type == "cuda"
     if args.precision == "fp16" and device.type != "cuda":
         raise ValueError("fp16 training requires CUDA; select --precision fp32 on CPU")
@@ -210,10 +154,13 @@ def main():
     print(f"  HiC encoder: {format_params(hic_params)}")
     print(f"  DiT backbone: {format_params(dit_backbone_params)}")
 
-    wandb.init(project="rf_dit_structure", name=args.run_name, config=vars(args))
+    wandb.init(project="diffbacchrom-cond-trace", name=args.run_name, config=vars(args))
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0)
     scaler = amp.GradScaler(enabled=use_amp)
+    scheduler = None
+    if args.warmup_steps > 0:
+        scheduler = get_scheduler(optimizer, warmup_steps=args.warmup_steps, total_steps=args.train_steps)
     rf = RF(model)
     model.train()
 
@@ -243,8 +190,11 @@ def main():
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         scaler.step(optimizer)
         scaler.update()
+        if scheduler is not None:
+            scheduler.step()
 
-        log_data = {"train/loss": loss.item(), "step": global_step + 1}
+        log_data = {"train/loss": loss.item(), "train/lr": optimizer.param_groups[0]["lr"],
+                    "step": global_step + 1}
 
         if collect_trace:
             fig = plot_tsne(cond_trace, seed=args.tsne_seed + global_step)
