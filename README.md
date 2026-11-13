@@ -92,11 +92,5 @@ the formal implementation, with `train_steps` as the demo's schedule horizon;
 The mask rule remains decoder logit > 0.5: values above the threshold become
 1, all others become 0, and coordinates with mask 0 are zeroed.
 
-Run the CPU regression checks with the project dependencies installed:
-
-```bash
-python -m unittest discover -s tests -v
-```
-
 Evaluation issues awaiting resolution before formal validation are recorded in
 [the evaluation follow-up notes](doc/evaluation_followups.md).
